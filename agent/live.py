@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .model_client import LiveModel
 from .dataset import OrdersDataset
+from .iris import IrisDataset
 from .reporting import export_report
 from .workflow import run_incident
 
@@ -14,12 +15,12 @@ _RUN_LOCK = Lock()  # The current pipeline and approval implementations share mo
 
 
 def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=None,
-             report=True, notify=None, model=None):
+             report=True, notify=None, model=None, rows=None, dataset_name="orders"):
     """Single-process, serialized live runs. No synthetic model fallback."""
     if not _RUN_LOCK.acquire(blocking=False):
         raise RuntimeError("Another incident is running; shared pipeline/approval state is busy")
     try:
-        dataset = OrdersDataset(inject_failure)
+        dataset = IrisDataset(rows) if dataset_name == "iris" else OrdersDataset(inject_failure, rows=rows)
         from memory_approval import memory_store
         if approval is None:
             from memory_approval.approval_server import request_approval
@@ -48,7 +49,7 @@ def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=
                               tools={name: call(name, fn) for name, fn in tools.items()}, model=selected_model)
         result["model_requests"] = getattr(selected_model, "calls", [])
         result["integrations"] = services
-        result["limitations"] = ["Local 30-row batch from the fixture; repairs are in-memory and verified against the expected schema. No production database is connected."]
+        result["limitations"] = ["Local dataset batch; repairs are in-memory and verified against the expected schema. No production database is connected."]
         if report:
             # Prefer Dev C's exporter if it lands; otherwise use this isolated adapter.
             try:

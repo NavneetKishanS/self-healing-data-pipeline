@@ -9,11 +9,13 @@ DATASET = Path(__file__).resolve().parent.parent / 'pipeline/fixtures/orders.csv
 
 
 class OrdersDataset:
-    def __init__(self, inject_failure=None):
+    def __init__(self, inject_failure=None, rows=None):
         with DATASET.open(newline='') as source:
             self.rows = list(csv.DictReader(source))[:30]
         for row in self.rows:
             row['amount'] = float(row['amount'])
+        if rows is not None:
+            self.rows = deepcopy(rows)
         self.expected_count = len(self.rows)
         self.columns = [
             {'name': 'order_id', 'type': 'string', 'nullable': False},
@@ -35,6 +37,8 @@ class OrdersDataset:
                 valid = isinstance(value, str) and bool(value)
                 if column['type'] == 'float':
                     valid = type(value) in (int, float) and math.isfinite(value)
+                elif column['type'] == 'integer':
+                    valid = type(value) is int
                 elif column['type'] == 'timestamp':
                     try:
                         datetime.fromisoformat(value)

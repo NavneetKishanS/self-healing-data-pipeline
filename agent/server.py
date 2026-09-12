@@ -15,6 +15,11 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 
 from .auth import Auth0Verifier, Unauthorized, Forbidden
 from .live import run_live
+from .dataset import OrdersDataset
+from .iris import IrisDataset, seed_iris, MEASUREMENTS
+import random
+from uuid import uuid4
+from datetime import datetime, timezone
 from .settings import integration_status, positive_number
 from .validation import fingerprint
 
@@ -28,7 +33,10 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
     database = directory / "runs.sqlite"
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, owner TEXT, status TEXT, result TEXT)")
+        db.execute("CREATE TABLE IF NOT EXISTS ingestion (id TEXT, owner TEXT, payload TEXT, result TEXT, created TEXT, run_id TEXT, PRIMARY KEY(id, owner))")
+        seed_iris(db)
     runs, lock = {}, Lock()
+    ingestion_lock = Lock()
 
     def identity(permission):
         if local_no_auth:
@@ -63,7 +71,7 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
             return run
         raise Forbidden("Incident not available to this user")
 
-    def start(run_id, owner, job_id, inject_failure):
+    def start(run_id, owner, job_id, inject_failure, rows=None, dataset_name="orders"):
         if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id):
             raise ValueError("runId must contain 1–128 letters, numbers, underscores or hyphens")
         # Current repo fixture has exactly one job. Broader access needs a real job/workspace ACL.
@@ -104,7 +112,8 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
 
         def worker():
             try:
-                result = runner(job_id, approval=approval, incident_id=run_id, inject_failure=inject_failure)
+                kwargs = {} if rows is None else {"rows": deepcopy(rows), "dataset_name": dataset_name}
+                result = runner(job_id, approval=approval, incident_id=run_id, inject_failure=inject_failure, **kwargs)
                 result["approval_subject"] = run["owner"] if run["decision"] else None
             except Exception as exc:
                 result = {"incident_id": run_id, "job_id": job_id, "outcome": "gave_up",
@@ -130,6 +139,101 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
     @app.get("/api/session")
     def session():
         return {"sub": identity("read:incidents")}
+
+    @app.post("/api/ingestion")
+    def ingest():
+        owner = identity("run:incidents")
+        data = request.get_json()
+        return ingest_data(owner, data)
+
+    def ingest_data(owner, data, replay=None):
+        if not isinstance(data, dict):
+            raise ValueError("Expected batchId and rows")
+        batch_id, rows = data.get("batchId"), data.get("rows")
+        if not isinstance(batch_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", batch_id):
+            raise ValueError("batchId must contain 1–128 letters, numbers, underscores or hyphens")
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 100 or not all(isinstance(row, dict) for row in rows):
+            raise ValueError("Send 1–100 row objects per batch")
+        payload = json.dumps(rows, allow_nan=False, sort_keys=True)
+        dataset_name = data.get("dataset", "orders")
+        if dataset_name not in ("orders", "iris"):
+            raise ValueError("Unknown dataset")
+        payload = json.dumps({"rows": rows, "dataset": dataset_name}, allow_nan=False, sort_keys=True)
+        dataset = IrisDataset(rows) if dataset_name == "iris" else OrdersDataset(rows=rows)
+        errors = dataset.errors()
+        flagged = sorted({error["row"] for error in errors})
+        result = {"dataset": dataset_name, "replay": replay, "batch_id": batch_id, "status": "schema_drift" if errors else "valid",
+                  "row_count": len(rows), "flagged_count": len(flagged), "mismatches": errors,
+                  "flagged_samples": [{"row": index, "data": rows[index - 1]} for index in flagged],
+                  "created_at": datetime.now(timezone.utc).isoformat()}
+        with lock, sqlite3.connect(database) as db:
+            existing = db.execute("SELECT payload,result FROM ingestion WHERE id=? AND owner=?", (batch_id, owner)).fetchone()
+            if existing:
+                if existing[0] != payload:
+                    return jsonify(error="batchId already used for different rows"), 409
+                return json.loads(existing[1])
+            count = db.execute("SELECT COUNT(*) FROM ingestion WHERE owner=?", (owner,)).fetchone()[0]
+            if count >= 1000:
+                return jsonify(error="Local ingestion storage limit reached (1000 batches)"), 429
+            db.execute("INSERT INTO ingestion VALUES (?, ?, ?, ?, ?, NULL)",
+                       (batch_id, owner, payload, json.dumps(result), result["created_at"]))
+        return jsonify(result), 201
+
+    @app.post("/api/ingestion/replay")
+    def replay_iris():
+        owner = identity("run:incidents")
+        data = request.get_json()
+        if not isinstance(data, dict) or type(data.get("corrupt")) is not bool:
+            raise ValueError("corrupt must be a boolean")
+        with sqlite3.connect(database) as db:
+            original = json.loads(db.execute("SELECT row_json FROM iris_source ORDER BY RANDOM() LIMIT 1").fetchone()[0])
+        incoming = deepcopy(original)
+        column = random.choice(MEASUREMENTS) if data["corrupt"] else None
+        if column:
+            incoming[column] = str(incoming[column])
+        return ingest_data(owner, {"batchId": str(uuid4()), "rows": [incoming], "dataset": "iris"},
+                           replay={"source": "Kaggle uciml/iris", "original": original, "changed_column": column})
+
+    @app.get("/api/ingestion")
+    def ingestion_status():
+        owner = identity("read:incidents")
+        with sqlite3.connect(database) as db:
+            records = db.execute("SELECT result,run_id FROM ingestion WHERE owner=? ORDER BY created DESC LIMIT 30", (owner,)).fetchall()
+            total = db.execute("SELECT COUNT(*) FROM ingestion WHERE owner=?", (owner,)).fetchone()[0]
+        return {"batches": [{**json.loads(row[0]), "run_id": row[1]} for row in records], "total_batches": total}
+
+    @app.post("/api/ingestion/<batch_id>/investigate")
+    def investigate_batch(batch_id):
+        with ingestion_lock:
+            return start_batch_investigation(batch_id)
+
+    def start_batch_investigation(batch_id):
+        owner = identity("run:incidents")
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT payload,result,run_id FROM ingestion WHERE id=? AND owner=?", (batch_id, owner)).fetchone()
+            if not row:
+                raise Forbidden("Batch not available to this user")
+            if json.loads(row[1])["status"] != "schema_drift":
+                raise ValueError("Batch has no schema drift")
+            run_id = row[2] or str(uuid4())
+            # Claim once before starting. A restart never replays uncertain work.
+            if not row[2]:
+                db.execute("UPDATE ingestion SET run_id=? WHERE id=? AND owner=? AND run_id IS NULL", (run_id, batch_id, owner))
+                db.commit()
+        if row[2]:
+            return {"incident_id": run_id}
+        try:
+            stored = json.loads(row[0])
+            rows = stored["rows"] if isinstance(stored, dict) else stored
+            name = stored.get("dataset", "orders") if isinstance(stored, dict) else "orders"
+            run = start(run_id, owner, "job_1", None, rows=rows, dataset_name=name)
+        except ValueError:
+            with sqlite3.connect(database) as db:
+                exists = db.execute("SELECT id FROM runs WHERE id=?", (run_id,)).fetchone()
+                if not exists:
+                    db.execute("UPDATE ingestion SET run_id=NULL WHERE id=? AND owner=?", (batch_id, owner))
+            raise
+        return {"incident_id": run["id"]}
 
     @app.post("/api/runs")
     def create_run():
