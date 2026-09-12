@@ -5,38 +5,50 @@ export default function IngestionMonitor({ request = fetch, onInvestigate }) {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
   const [replaying, setReplaying] = useState(false);
-  const [drift, setDrift] = useState(false);
+  const [transmitter, setTransmitter] = useState({});
   const [busy, setBusy] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
   const [connected, setConnected] = useState(false);
   useEffect(() => {
-    let stopped = false, timer;
+    let stopped = false, timer, socket;
     const controller = new AbortController();
-    async function poll() {
+    async function connect() {
       try {
-        const response = await request('/pipeline-api/ingestion', { signal: controller.signal });
+        const response = await request('/pipeline-api/transmitter/ticket', { method: 'POST', signal: controller.signal });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Cannot read ingestion stream');
-        if (!stopped) { setBatches(data.batches); setTotal(data.total_batches); setConnected(true); setError(''); }
-      } catch (e) { if (!stopped) { setConnected(false); setError(e.message); } }
-      if (!stopped) timer = setTimeout(poll, 1000);
+        if (!response.ok) throw new Error(data.error || 'Stream authentication failed');
+        if (stopped) return;
+        socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/pipeline-api/transmitter/stream`);
+        socket.onopen = () => socket.send(data.ticket);
+        socket.onmessage = event => {
+          const snapshot = JSON.parse(event.data);
+          setTransmitter(snapshot.transmitter || {}); setReplaying(Boolean(snapshot.transmitter?.running));
+          setBatches(snapshot.batches); setTotal(snapshot.total_batches); setConnected(true); setError('');
+        };
+        socket.onclose = () => { if (!stopped) { setConnected(false); timer = setTimeout(connect, 2000); } };
+        socket.onerror = () => { if (!stopped) setError('Live stream disconnected; reconnecting…'); };
+      } catch (e) {
+        if (!stopped) { setConnected(false); setError(e.message); timer = setTimeout(connect, 3000); }
+      }
     }
-    poll();
-    return () => { stopped = true; clearTimeout(timer); controller.abort(); };
+    connect();
+    return () => { stopped = true; clearTimeout(timer); controller.abort(); socket?.close(); };
   }, [request]);
-  useEffect(() => {
-    if (!replaying) return;
-    let stopped = false, timer;
-    async function emit() {
-      try {
-        const response = await request('/pipeline-api/ingestion/replay', { method: 'POST',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ corrupt: drift }) });
-        if (!response.ok) throw new Error('Replay ingestion failed; stopped to avoid retrying a batch');
-      } catch (e) { if (!stopped) { setError(e.message); setReplaying(false); } return; }
-      if (!stopped) timer = setTimeout(emit, 2000);
-    }
-    emit();
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [replaying, drift, request]);
+  const selected = batches.find(batch => batch.batch_id === selectedId);
+  const flagged = batches.filter(batch => batch.flagged_count > 0).length;
+  async function controlTransmitter() {
+    setBusy(true);
+    try {
+      const response = await request(`/pipeline-api/transmitter/${replaying ? 'stop' : 'start'}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval_seconds: 2, corruption_probability: 0.3 }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Transmitter request failed');
+      setTransmitter(data); setReplaying(Boolean(data.running));
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
   async function investigate(batch) {
     setBusy(true);
     try {
@@ -51,24 +63,35 @@ export default function IngestionMonitor({ request = fetch, onInvestigate }) {
     <header><span className="eyebrow">INGESTION MONITOR · {connected ? 'CONNECTED' : 'CONNECTING'}</span>
       <h1>Watch the rows arrive.</h1>
       <p>Every incoming batch is checked against the expected schema on arrival. Mismatched samples are flagged immediately, without waiting for a model.</p>
-      <p><strong>{total} batches received</strong> · Latest 30 shown · Dashboard refreshes every second</p>
+      <p><strong>{total} batches received</strong> · Latest 30 shown · WebSocket live stream</p>
     </header>
-    <article><h2>Kaggle Iris replay</h2><p>No production source is connected yet. Every two seconds, the backend selects one random flower sample from 150 clean Kaggle Iris rows stored in SQLite.</p>
-      <div className="actions"><button onClick={() => setReplaying(!replaying)}>{replaying ? 'Stop replay' : 'Start replay'}</button>
-        <button className="reject" aria-pressed={drift} onClick={() => setDrift(!drift)}>{drift ? 'Send clean samples' : 'Corrupt a random numeric field'}</button></div>
-      <small>{drift ? 'Each new sample has one randomly selected measurement changed from number to string.' : 'New samples keep their original types.'} Replay stops when this page closes; the backend keeps accepting ingestion.</small>
+    <article><h2>Iris transmission API</h2><p>The backend sends one random Kaggle Iris sample every two seconds. Each sample has a 30% chance of one random field changing type.</p>
+      <button disabled={busy} onClick={controlTransmitter}>{replaying ? 'Stop transmitter' : 'Start transmitter'}</button>
+      <p>{transmitter.sent || 0} samples sent in this transmitter session.</p>
+      {transmitter.error && <p className="error">{transmitter.error}</p>}
+      <small>Continues when you close this page. Stops on request, server shutdown, or the 1,000-batch storage limit. Clean source rows remain unchanged.</small>
     </article>
     {error && <p className="error" role="alert">{error}</p>}
-    {!batches.length && <p>Waiting for incoming rows. Start the replay or send your pipeline’s batches to POST /api/ingestion.</p>}
-    {batches.map(batch => <article key={batch.batch_id}>
-      <span className="eyebrow">{batch.status === 'valid' ? 'SCHEMA VALID' : 'SCHEMA DRIFT DETECTED'}</span>
-      <h2>{batch.row_count} rows received · {batch.flagged_count} flagged</h2>
-      <small>{batch.dataset || "orders"} · {new Date(batch.created_at).toLocaleTimeString()} · {batch.batch_id}</small>
-      {batch.replay && <details><summary>Original Kaggle row{batch.replay.changed_column ? ` · changed ${batch.replay.changed_column}` : ''}</summary><pre>{JSON.stringify(batch.replay.original, null, 2)}</pre></details>}
-      {batch.flagged_count > 0 && <><pre>{JSON.stringify(batch.mismatches, null, 2)}</pre>
-        <details><summary>Flagged input samples</summary><pre>{JSON.stringify(batch.flagged_samples, null, 2)}</pre></details>
-        <button disabled={busy} onClick={() => investigate(batch)}>{batch.run_id ? 'Open investigation' : 'Investigate flagged batch'}</button>
-        <small>Investigation sends this batch’s evidence to your configured model. Repairs still require approval.</small></>}
-    </article>)}
+    {!batches.length && <p>Waiting for incoming rows. Start the transmitter or send your pipeline’s batches to POST /api/ingestion.</p>}
+    <article className="stream-panel">
+      <div className="stream-heading"><h2>Recent samples</h2><span>{flagged} flagged / {batches.length} recent</span></div>
+      <div className="sample-list" role="list" aria-label="Incoming samples">
+        {batches.map(batch => <div role="listitem" key={batch.batch_id}>
+          <button className={`sample-row ${batch.flagged_count ? 'drift-row' : ''}`} aria-pressed={selectedId === batch.batch_id}
+            onClick={() => setSelectedId(selectedId === batch.batch_id ? null : batch.batch_id)}>
+            <time>{new Date(batch.created_at).toLocaleTimeString()}</time>
+            <span>Sample {batch.replay?.original?.Id ?? batch.batch_id.slice(0, 8)}</span>
+            <strong>{batch.flagged_count ? `${batch.mismatches[0]?.column}: type mismatch` : 'Valid'}</strong>
+          </button>
+        </div>)}
+      </div>
+      {!selected && <p className="muted">Select a sample to inspect its values. Detection runs in the backend even when this page is closed.</p>}
+      {selected && <div className="sample-detail"><h3>{selected.flagged_count ? 'Flagged sample' : 'Valid sample'}</h3>
+        {selected.replay && <><h4>Original row</h4><pre>{JSON.stringify(selected.replay.original, null, 2)}</pre></>}
+        {selected.flagged_count > 0 && <><h4>Detected mismatches</h4><pre>{JSON.stringify(selected.mismatches, null, 2)}</pre>
+          <details><summary>Received sample</summary><pre>{JSON.stringify(selected.flagged_samples, null, 2)}</pre></details>
+          <button disabled={busy} onClick={() => investigate(selected)}>{selected.run_id ? 'Open investigation' : 'Investigate sample'}</button></>}
+      </div>}
+    </article>
   </section>;
 }
