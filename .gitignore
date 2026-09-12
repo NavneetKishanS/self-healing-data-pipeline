@@ -6,6 +6,9 @@ graphify-out/
 !.env.dev-c.example
 .venv/
 venv/
+# Local uv toolchain files (see .env.toolchain); the repo installs from requirements.txt
+pyproject.toml
+uv.lock
 __pycache__/
 *.py[cod]
 .DS_Store

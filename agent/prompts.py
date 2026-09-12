@@ -8,6 +8,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, UndefinedErro
 _DIRECTORY = Path(__file__).parent / "templates"
 _NAMES = ("system", "diagnose", "critique")
 _INPUTS = {"system": set(), "diagnose": {"evidence"}, "critique": {"evidence", "proposal"}}
+# Procedural memory is optional: the templates render nothing for it when it is None.
+_OPTIONAL = {"system": set(), "diagnose": {"procedures"}, "critique": {"procedures"}}
 _ENV = Environment(
     loader=FileSystemLoader(str(_DIRECTORY)),
     undefined=StrictUndefined,
@@ -21,6 +23,8 @@ def render(name: str, **context) -> str:
     missing = _INPUTS[name] - context.keys()
     if missing:
         raise UndefinedError("Missing prompt inputs: " + ", ".join(sorted(missing)))
+    for key in _OPTIONAL[name]:
+        context.setdefault(key, None)
     return _ENV.get_template(name + ".jinja").render(**context)
 
 
