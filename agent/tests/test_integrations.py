@@ -41,6 +41,7 @@ class AdapterTests(unittest.TestCase):
     def test_openrouter_default_requires_openrouter_key(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "direct-test-secret"}, clear=True):
             self.assertEqual(integration_status()["model"], DEFAULT_MODEL)
+            self.assertTrue(DEFAULT_MODEL.startswith("openrouter/") and DEFAULT_MODEL.endswith("/free"))
             self.assertEqual(integration_status()["model_key"], "missing OPENROUTER_API_KEY")
             with self.assertRaisesRegex(ValueError, "OPENROUTER_API_KEY"):
                 LiveModel(Mock())

@@ -25,7 +25,8 @@ Dev B owns the files in `agent/`. This adds no frontend and does not change Dev 
 
 Configure credentials in the repo-root `.env`.
 The default LLM uses OpenRouter: set `OPENROUTER_API_KEY` and choose a chat model using
-`LLM_MODEL=openrouter/<author>/<model>` (default: `openrouter/anthropic/claude-sonnet-4.6`).
+`LLM_MODEL=openrouter/<author>/<model>:free` (default: `openrouter/openrouter/free`, the free auto-router);
+see `.env.example` for the free-tier tier layout (`LLM_FAST_MODEL`, `LLM_FALLBACK_MODELS`).
 Auth0's domain/client ID are public configuration, while vendor API keys remain server-side.
 Dev C supplies the frontend's Auth0 application/client ID and configured login/logout callbacks.
 Configure an Auth0 API with the chosen `AUTH0_AUDIENCE` and grant the appropriate permissions:

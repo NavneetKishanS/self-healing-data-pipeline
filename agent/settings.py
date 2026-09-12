@@ -6,7 +6,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-DEFAULT_MODEL = "openrouter/anthropic/claude-sonnet-4.6"
+# OpenRouter's free auto-router: the one free ID that never rotates away. Paid models are not used.
+DEFAULT_MODEL = "openrouter/openrouter/free"
 PROVIDER_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
