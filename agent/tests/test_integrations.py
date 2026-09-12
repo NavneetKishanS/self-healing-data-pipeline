@@ -18,7 +18,6 @@ from agent.auth import Auth0Verifier, Unauthorized, Forbidden
 from agent.model_client import LiveModel
 from agent.settings import DEFAULT_MODEL, integration_status
 from agent.live import run_live
-from agent.research_tools import search_repair_docs
 from agent.reporting import export_report
 from agent.server import create_app
 
@@ -62,16 +61,10 @@ class AdapterTests(unittest.TestCase):
 
         events = []
         with patch.dict(os.environ, {"LLM_MODEL": "anthropic/test", "ANTHROPIC_API_KEY": "test-secret"}), \
-                patch("pipeline.tools_pipeline.get_recent_logs", return_value={
-                    "job_id": "job_1", "status": "failed", "error_type": "schema_drift",
-                    "affected_table": "orders", "expected_row_count": 3,
-                }), \
-                patch("pipeline.tools_pipeline.get_schema", return_value={"table_name": "orders", "columns": []}), \
                 patch("memory_approval.memory_store.search_past_incidents", return_value={"matches": []}), \
-                patch("agent.live.search_repair_docs", return_value={"status": "unavailable", "sources": []}), \
-                patch("pipeline.tools_pipeline.apply_fix") as apply:
+                patch("agent.dataset.OrdersDataset.apply_fix") as apply:
             model = LiveModel(Mock(side_effect=AuthenticationError("test-secret")))
-            result = run_live(model=model, approval=Mock(), report=False, notify=events.append)
+            result = run_live(model=model, approval=Mock(), report=False, notify=events.append, inject_failure="schema_drift")
         self.assertIn("AuthenticationError", result["reason"])
         self.assertIn("ANTHROPIC_API_KEY", result["reason"])
         self.assertNotIn("test-secret", json.dumps(result))
@@ -101,23 +94,7 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("test-secret", str(error.exception))
         self.assertEqual(len(model.calls), 1)
 
-    def test_exa_request_contract_and_result_bounds(self):
-        response = httpx.Response(200, json={"results": [
-            {"title": "Docs", "url": "https://docs.example/test", "text": "x" * 3000}
-        ] * 4}, request=httpx.Request("POST", "https://api.exa.ai/search"))
-        with patch.dict(os.environ, {"EXA_API_KEY": "test-secret"}), patch("agent.research_tools.httpx.post", return_value=response) as post:
-            result = search_repair_docs("public error")
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["sources"]), 3)
-        self.assertEqual(len(result["sources"][0]["excerpt"]), 2000)
-        self.assertEqual(post.call_args.kwargs["json"]["numResults"], 3)
-        self.assertFalse(post.call_args.kwargs["follow_redirects"])
 
-    def test_exa_missing_key_never_contacts_network(self):
-        with patch.dict(os.environ, {"EXA_API_KEY": ""}), patch("agent.research_tools.httpx.post") as post:
-            result = search_repair_docs("test")
-        self.assertEqual(result["status"], "unavailable")
-        post.assert_not_called()
 
     def test_ambiguous_sends_document_once_and_redacts_configured_secrets(self):
         response = httpx.Response(201, json={"id": "doc_123"}, request=httpx.Request("POST", "https://app.ambiguous.ai/api/documents"))

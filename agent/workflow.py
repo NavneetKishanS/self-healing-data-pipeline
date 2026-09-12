@@ -17,15 +17,6 @@ REQUIRED_TOOLS = (
     "get_recent_logs", "get_schema", "search_past_incidents", "request_approval",
     "apply_fix", "rerun_pipeline", "log_incident",
 )
-# Deliberately public, fixed terminology. No raw log contents enter web queries.
-RESEARCH_QUERIES = {
-    "schema_drift": "data pipeline schema drift string to float conversion documentation",
-    "schema_mismatch": "data pipeline schema mismatch string to float conversion documentation",
-    "null_spike": "data pipeline required field null validation documentation",
-    "timeout": "data pipeline timeout diagnosis retry policy documentation",
-}
-
-
 class _Stop(Exception):
     def __init__(self, outcome, reason):
         self.outcome, self.reason = outcome, reason
@@ -38,7 +29,7 @@ def run_incident(
     """Run the CONTEXT.md sequence using supplied functions.
 
     model(system=str, prompt=str) -> JSON text; at most one provider request per call.
-    tools use exactly the keyword names in CONTEXT.md. search_repair_docs is optional.
+    tools use exactly the keyword names in CONTEXT.md.
     Configuration errors raise ValueError before execution; operational failures return a
     terminal result. Callers must serialize runs sharing mutable pipeline/approval state.
     """
@@ -123,23 +114,7 @@ def run_incident(
         history = tool("search_past_incidents", error_type=error_type)
         if not isinstance(history.get("matches"), list):
             raise _Stop("needs_human", "Incident memory returned an invalid matches list")
-        if callable(dispatch.get("search_repair_docs")) and error_type in RESEARCH_QUERIES:
-            try:
-                research = tool("search_repair_docs", query=RESEARCH_QUERIES[error_type])
-                sources = research.get("sources")
-                if research.get("status") != "ok" or not isinstance(sources, list):
-                    raise ValueError("Research unavailable")
-                for source in sources[:3]:
-                    if (not isinstance(source, dict)
-                            or not all(isinstance(source.get(k), str) for k in ("title", "url", "excerpt"))
-                            or not source["url"].startswith(("https://", "http://"))):
-                        raise ValueError("Invalid research source")
-                result["sources"] = [{"title": s["title"][:300], "url": s["url"][:2048],
-                                      "excerpt": s["excerpt"][:2000]} for s in sources[:3]]
-            except Exception:
-                result["warnings"].append("External research unavailable; using local evidence")
-        evidence = {"logs": logs, "schema": schema, "past_incidents": history,
-                    "external_sources": deepcopy(result["sources"])}
+        evidence = {"logs": logs, "schema": schema, "past_incidents": history}
         stage = "diagnose"
         proposal = reason("diagnose", evidence)
         result["diagnosis"] = deepcopy(proposal)
