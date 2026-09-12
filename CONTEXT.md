@@ -142,11 +142,11 @@ apply only the approved repair, rerun, and report the observed outcome.
 - Build the first end-to-end run with shared fixtures, then replace stubs with real functions.
   Label fixtures in demos; do not present simulated execution as a production integration.
 
-## Required hackathon integrations: CopilotKit, Exa, and Ambiguous
+## Required hackathon integrations: CopilotKit, Exa, Ambiguous, and Auth0
 
 Build a pipeline incident copilot: investigate a reproducible failure, retrieve supporting public
 technical documentation, show the diagnosis and critique, obtain approval, and verify the repair.
-All three integrations must participate in the demonstrated workflow, not merely appear as dependencies.
+All four integrations must participate in the demonstrated workflow, not merely appear as dependencies.
 
 - **CopilotKit (Dev C, with Dev B):** build a React frontend in `frontend/` with incident progress,
   source links, a proposed-fix card, Approve/Reject controls, and observed recovery results.
@@ -190,6 +190,25 @@ All three integrations must participate in the demonstrated workflow, not merely
 - Send only a redacted report to the configured workspace, never raw rows or credentials.
   Do not expose Ambiguous mail, chat, or arbitrary workspace operations to the model. Demo a real
   report export; use mocked delivery in evals and check duplicate prevention and export failure.
+
+- **Auth0 (Dev C, with Dev B):** use Universal Login for the CopilotKit frontend and protect
+  incident reads, run starts, progress streams, and approval endpoints. Use the official SDK for
+  the chosen frontend framework. Configure the Auth0 domain, client ID, API audience, and exact
+  callback/logout URLs through environment configuration; browser configuration contains no secrets.
+  See [Auth0's documentation index](https://auth0.com/llms.txt) and
+  [API token validation](https://auth0.com/docs/secure/tokens/access-tokens/validate-access-tokens).
+- Validate API access tokens server-side with a maintained library: signature, allowed algorithm,
+  issuer, audience, and expiry. Do not use ID tokens as API credentials. Enforce application-defined
+  `read:incidents`, `run:incidents`, and `approve:fixes` permissions plus access to the requested
+  incident/workspace. Hiding a button is not authorization; secure runtime forwarding and any
+  reachable Flask fallback against bypasses as well.
+- Bind the verified user's subject to the approval record alongside incident ID, fix hash, and
+  decision time. Login alone never approves a repair. Keep tokens out of prompts, traces, Exa,
+  and Ambiguous reports. Authentication is request middleware, not another model tool call.
+- Demo login and approval by an authorized user; test missing/expired tokens, a viewer attempting
+  approval, and access to an unrelated incident. Use local token-verification fixtures in evals.
+  Keep initial scope to login and API authorization; Token Vault and delegated third-party access
+  are unnecessary for the configured server-side Exa and Ambiguous credentials.
 
 ## Model access and configuration (Dev B)
 
@@ -397,7 +416,7 @@ Additional guidance adapted from [The AI Agent Stack: A Builder's Guide to Moder
   executable markup. Keep developer traces separate from the human approval view.
 - **Regression checks (all):** rerun the eval suite after prompt, model, or tool changes; include
   injected instructions in logs/history and attempts to mutate an unrelated target.
-- **Integration scope:** CopilotKit/AG-UI, Exa, and Ambiguous are required for this hackathon. Keep pipeline
+- **Integration scope:** CopilotKit/AG-UI, Exa, Ambiguous, and Auth0 are required for this hackathon. Keep pipeline
   tools as Python functions; MCP and A2A remain unnecessary for the current scope.
 
 Keep an internal trace separate from the fixed `log_incident` payload: run/incident IDs, job ID,
