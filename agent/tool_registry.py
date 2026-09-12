@@ -85,6 +85,25 @@ TOOL_SCHEMAS = [
 
 # ---- Stub implementations (realistic fake data, matches CONTEXT.md shapes exactly) ----
 def _stub_get_recent_logs(job_id: str) -> dict:
+    # Try to read from real STATE if available, else use hardcoded defaults
+    try:
+        from pipeline.synthetic_pipeline import STATE
+        job = STATE.get(job_id)
+        if job:
+            return {
+                "job_id": job_id,
+                "status": job["status"],
+                "error_type": job["error_type"],
+                "error_message": job["error_message"],
+                "timestamp": job["timestamp"],
+                "affected_table": job["affected_table"],
+                "row_count": job["row_count"],
+                "expected_row_count": job["expected_row_count"],
+            }
+    except ImportError:
+        pass
+
+    # Fallback
     return {
         "job_id": job_id, "status": "failed", "error_type": "schema_drift",
         "error_message": "Cannot cast column 'amount' (string) to float during transform step.",
@@ -94,6 +113,20 @@ def _stub_get_recent_logs(job_id: str) -> dict:
 
 
 def _stub_get_schema(table_name: str) -> dict:
+    # Try to read from real SCHEMA if available, else use hardcoded defaults
+    try:
+        from pipeline.synthetic_pipeline import SCHEMA
+        schema = SCHEMA.get(table_name)
+        if schema:
+            return {
+                "table_name": table_name,
+                "columns": schema["columns"],
+                "last_changed": schema["last_changed"],
+            }
+    except ImportError:
+        pass
+
+    # Fallback
     return {
         "table_name": table_name,
         "columns": [
@@ -105,6 +138,14 @@ def _stub_get_schema(table_name: str) -> dict:
 
 
 def _stub_search_past_incidents(error_type: str) -> dict:
+    # Try to read from real memory store if available
+    try:
+        from memory_approval.memory_store import search_past_incidents
+        return search_past_incidents(error_type)
+    except ImportError:
+        pass
+
+    # Fallback
     return {"matches": [{
         "incident_id": "inc_stub", "error_type": error_type,
         "root_cause": "Stub: similar drift fixed previously by patching the column type.",

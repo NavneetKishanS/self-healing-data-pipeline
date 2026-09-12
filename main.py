@@ -29,6 +29,8 @@ def main():
         run_server_in_background()
 
     from pipeline.failures import inject
+    from pipeline.synthetic_pipeline import reset
+    reset(args.job_id)  # Clean slate before injecting failure
     inject(args.inject_failure, args.job_id)
     print(f"[main] Injected failure: {args.inject_failure} on {args.job_id}")
 
