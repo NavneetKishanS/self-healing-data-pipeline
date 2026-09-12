@@ -306,6 +306,12 @@ costs zero implementation hours and still shows the thinking.
   independently rename wire values — agree on any alias mapping before changing it.
 - **Replay safety:** no idempotency key on public write signatures. Track incident ID + fix hash +
   mutation state internally; don't blindly replay writes after a crash.
+- **`null_spike`/`timeout` rerun verification:** `rerun_pipeline` only re-checks the real failure
+  condition for `schema_drift` (it re-reads `SCHEMA`). For the other two scenarios, `reset()`
+  unconditionally clears status to success, so `rerun_pipeline` reports `fixed` regardless of
+  whether `apply_fix` did anything real. Deliberately left this way — consistent with the decision
+  elsewhere in this doc that only `schema_drift` gets demo polish. Do not demo `null_spike` or
+  `timeout` as proof the fix loop verifies anything; they only prove the tool contracts round-trip.
 
 ---
 

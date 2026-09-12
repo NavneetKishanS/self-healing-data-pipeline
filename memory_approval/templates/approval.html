@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pipeline repair approval</title>
+  <style>
+    :root {font-family:system-ui,sans-serif;color:#18333b;background:#eef3f3}
+    body {margin:0;padding:40px 20px} main {max-width:740px;margin:auto}
+    header {margin-bottom:28px} .label {color:#31696b;font-size:12px;font-weight:700;letter-spacing:.12em}
+    h1 {font-size:30px;margin:10px 0} p {line-height:1.6} .subtle {color:#536b73}
+    article {background:white;border:1px solid #c8d9db;border-radius:16px;padding:28px;margin:20px 0}
+    pre {white-space:pre-wrap;overflow-wrap:anywhere;background:#eff5f5;border-radius:8px;padding:18px}
+    code {overflow-wrap:anywhere} label {display:block;margin:20px 0 8px}
+    textarea {box-sizing:border-box;width:100%;min-height:80px;border:1px solid #94b3b5;border-radius:8px;padding:10px;font:inherit}
+    button {font:inherit;font-weight:600;padding:12px 20px;border-radius:8px;cursor:pointer;margin:14px 8px 0 0;border:1px solid #126963}
+    .approve {background:#126963;color:white} .reject {background:white;color:#833b31;border-color:#b58882}
+    small {display:block;margin-top:16px;color:#536b73} a {color:#126963}
+  </style>
+</head>
+<body><main>
+  <header><span class="label">PIPELINE INCIDENT REVIEW</span><h1>A repair needs your decision</h1>
+    <p class="subtle">Review the proposal before allowing the pipeline to change.</p></header>
+  {% if not approvals %}<article><h2>No pending approvals</h2><p>Start an investigation or the local approval demo, then refresh this page.</p><a href="/">Refresh</a></article>{% endif %}
+  {% for record in approvals %}<article>
+    <span class="label">AWAITING HUMAN APPROVAL</span>
+    <h2>{{ record.diagnosis }}</h2>
+    <p>Model confidence: {{ (record.confidence * 100)|round|int }}% — this is a model estimate.</p>
+    <h3>Proposed change</h3><pre>{{ record.proposed_fix|tojson(indent=2) }}</pre>
+    <form action="/decide" method="post">
+      {% for name in ['approval_id', 'incident_id', 'fix_hash', 'decision_token'] %}
+      <input type="hidden" name="{{ name }}" value="{{ record[name] }}">{% endfor %}
+      <label for="note-{{ record.approval_id }}">Decision note (optional)</label>
+      <textarea id="note-{{ record.approval_id }}" name="note" maxlength="2000" placeholder="Any concerns or follow-up checks?"></textarea>
+      <button class="approve" name="decision" value="approve">Approve repair</button>
+      <button class="reject" name="decision" value="reject">Reject repair</button>
+    </form>
+    <small>Incident: <code>{{ record.incident_id }}</code><br>Approval expires automatically. Approval itself does not run the repair.</small>
+  </article>{% endfor %}
+</main></body></html>
