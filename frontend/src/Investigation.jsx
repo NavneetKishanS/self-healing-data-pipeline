@@ -3,7 +3,8 @@ import React, { useEffect, useRef, useState } from "react";
 import IngestionMonitor from "./IngestionMonitor.jsx";
 
 const storageKey = "pipeline-investigation";
-export default function Investigation({ request = fetch, identityControls }) {
+
+export default function Investigation({ request = fetch }) {
   const [runId, setRunId] = useState(() => sessionStorage.getItem(storageKey) || "");
   const [run, setRun] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -59,32 +60,134 @@ export default function Investigation({ request = fetch, identityControls }) {
     finally { guard.current = false; setBusy(false); }
   }
 
-  return <main className="investigation">
-    {identityControls}
-    <IngestionMonitor request={request} onInvestigate={openIncident} />
-    {error && <p role="alert" className="error">{error}</p>}
-    {runId && <article aria-live="polite"><span className="eyebrow">INCIDENT STATUS</span>
-      <h2>{finished ? (result?.outcome === "fixed" ? "Repair verified" : "Stopped without verified repair") : pending ? "Your approval is needed" : "Investigating the batch…"}</h2>
-      {!finished && !pending && <p>Collecting dataset evidence, proposing a conversion, and checking the proposal. No change is applied before approval.</p>}
-      {run?.warning && <p className="error">{run.warning}</p>}
-      <small>Incident: {runId}</small>
-    </article>}
-    {pending && <article><span className="eyebrow">REVIEW BEFORE APPLYING</span><h2>Proposed repair</h2>
-      <p>{pending.diagnosis}</p><pre>{JSON.stringify(pending.proposed_fix, null, 2)}</pre>
-      <p>Model confidence: {Math.round(pending.confidence * 100)}% (estimate)</p>
-      <label htmlFor="decision-note">Decision note (optional)</label>
-      <textarea id="decision-note" maxLength={1000} value={note} onChange={e => setNote(e.target.value)} />
-      <div className="actions"><button disabled={busy} onClick={() => decide(true)}>Approve conversion</button>
-        <button className="reject" disabled={busy} onClick={() => decide(false)}>Reject repair</button></div>
-      <small>Approval expires if left unanswered. Rejection leaves the batch unchanged.</small>
-    </article>}
-    {result && <article><span className="eyebrow">RUN RESULT</span><h2>{result.reason}</h2>
-      {result.diagnosis && <p>{result.diagnosis.diagnosis}</p>}
-      <p>Mutation: {result.mutation_state || "unknown"} · Model calls: {result.model_calls ?? "—"}</p>
-      {result.verification && <><h3>Validated output</h3><p>{result.verification.row_count} rows · Schema {result.verification.schema_valid ? "valid" : "not validated"}</p>
-        <pre>{JSON.stringify(result.verification.sample_rows, null, 2)}</pre></>}
-      <details><summary>Step history and full result</summary><pre>{JSON.stringify(result, null, 2)}</pre></details>
-    </article>}
-    <footer>Local dataset demonstration · Actual row conversion · Human approval required</footer>
-  </main>;
+  const verified = result?.outcome === "fixed";
+
+  return (
+    <div className="stack">
+      <IngestionMonitor request={request} onInvestigate={openIncident} />
+
+      {error && <div className="alert" role="alert">{error}</div>}
+
+      {runId && (
+        <section className="card" aria-live="polite">
+          <div className="card-head">
+            <div>
+              <span className="eyebrow">Incident status</span>
+              <h2 style={{ marginTop: 6 }}>
+                {finished
+                  ? (verified ? "Repair verified" : "Stopped without a verified repair")
+                  : pending ? "Your approval is needed" : "Investigating the batch…"}
+              </h2>
+            </div>
+            <span className={`pill ${finished ? (verified ? "ok" : "warn") : pending ? "warn" : "info"}`}>
+              {finished ? (verified ? "Verified" : "Needs a human") : pending ? "Blocking" : "Running"}
+            </span>
+          </div>
+
+          {!finished && !pending && (
+            <>
+              <div className="working"><span className="spinner" /> Collecting evidence and checking the proposal…</div>
+              <p className="muted" style={{ marginTop: 10, fontSize: 13 }}>
+                No change is applied before approval.
+              </p>
+            </>
+          )}
+
+          {run?.warning && <div className="alert warn" style={{ marginTop: 12 }}>{run.warning}</div>}
+          <small>Incident {runId}</small>
+        </section>
+      )}
+
+      {pending && (
+        <section className="card flagged">
+          <div className="card-head">
+            <div>
+              <span className="eyebrow">Review before applying</span>
+              <h2 style={{ marginTop: 6 }}>Proposed repair</h2>
+            </div>
+            <span className="pill warn">Blocking</span>
+          </div>
+
+          <p className="lede">{pending.diagnosis}</p>
+
+          <div className="kv" style={{ marginTop: 18 }}>
+            <div>
+              <div className="kv-key">Model confidence</div>
+              <div className="kv-val">{Math.round(pending.confidence * 100)}%</div>
+            </div>
+            <div>
+              <div className="kv-key">Fix type</div>
+              <div className="kv-val">{pending.proposed_fix?.fix_type}</div>
+            </div>
+            <div>
+              <div className="kv-key">Target</div>
+              <div className="kv-val">{pending.proposed_fix?.target}</div>
+            </div>
+          </div>
+
+          <div className="code-label">Exact change to be applied</div>
+          <pre>{JSON.stringify(pending.proposed_fix, null, 2)}</pre>
+
+          <label htmlFor="decision-note">Decision note (optional)</label>
+          <textarea id="decision-note" maxLength={1000} value={note}
+                    placeholder="Context for the audit trail."
+                    onChange={e => setNote(e.target.value)} />
+
+          <div className="actions">
+            <button className="btn" disabled={busy} onClick={() => decide(true)}>Approve conversion</button>
+            <button className="btn danger" disabled={busy} onClick={() => decide(false)}>Reject repair</button>
+          </div>
+          <small>Approval expires if left unanswered. Rejection leaves the batch unchanged.</small>
+        </section>
+      )}
+
+      {result && (
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <span className="eyebrow">Run result</span>
+              <h2 style={{ marginTop: 6 }}>{result.reason}</h2>
+            </div>
+            <span className={`pill ${verified ? "ok" : "warn"}`}>{result.outcome}</span>
+          </div>
+
+          {result.diagnosis && <p className="lede">{result.diagnosis.diagnosis}</p>}
+
+          <div className="kv" style={{ marginTop: 18 }}>
+            <div>
+              <div className="kv-key">Mutation</div>
+              <div className="kv-val" style={{ textTransform: "capitalize" }}>{result.mutation_state || "unknown"}</div>
+            </div>
+            <div>
+              <div className="kv-key">Model calls</div>
+              <div className="kv-val">{result.model_calls ?? "—"}</div>
+            </div>
+            {result.verification && (
+              <>
+                <div>
+                  <div className="kv-key">Rows validated</div>
+                  <div className="kv-val">{result.verification.row_count}</div>
+                </div>
+                <div>
+                  <div className="kv-key">Schema</div>
+                  <div className="kv-val">{result.verification.schema_valid ? "Valid" : "Not validated"}</div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {result.verification && (
+            <details>
+              <summary>Validated output sample</summary>
+              <pre>{JSON.stringify(result.verification.sample_rows, null, 2)}</pre>
+            </details>
+          )}
+          <details>
+            <summary>Step history and full result</summary>
+            <pre>{JSON.stringify(result, null, 2)}</pre>
+          </details>
+        </section>
+      )}
+    </div>
+  );
 }
