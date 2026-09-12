@@ -1,5 +1,2 @@
+# Kept as an alias for existing setup commands; every agent dependency lives in the repo-root file.
 -r ../requirements.txt
-litellm>=1.80,<2
-httpx>=0.27,<1
-PyJWT[crypto]>=2.10,<3
-ag-ui-protocol>=0.1,<1

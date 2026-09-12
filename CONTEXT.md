@@ -441,3 +441,85 @@ tested, so leave it — just don't cite §5 as describing the current model_clie
 
 Feature freeze and pre-submission checklist from §7 still apply — nothing here changes what
 "done" looks like for the demo, only who's doing what and how much time is left to do it.
+
+---
+
+## 10. Amendment — procedural graph (self-evolving procedures)
+
+Incident memory (`incidents.json`) is episodic: it records what happened, and every new incident makes
+the model re-derive what to do from raw history. §6 also notes that its outcome vocabulary
+(`resolved | reverted | recurred`) cannot describe a rejection or an unverified repair — so the most
+valuable negative signal we get, an on-call engineer clicking Reject with a note, was logged nowhere
+the agent could act on. The procedural graph closes that gap. No §2 signature changes.
+
+**What it is.** `memory_approval/procedural_graph_seed.json` (tracked, immutable, consistent with
+`incidents_seed.json`: `inc_001` validates `schema_patch`, `inc_004` prunes `retry_policy`) seeds a
+runtime copy at `runtime/procedural_graph.json` (gitignored, honours `DEV_C_DATA_DIR`, written through
+the same locked atomic transaction memory uses). Nodes are the fixed-sequence stages plus the three
+fix types. Edges carry a `relation`, an `error_type` condition, `guidance`, `pitfalls`, and `evidence`
+counters (`successes`, `rejections`, `failures`, `refusals`, `incidents`):
+
+- `LEADS_TO` — procedural guidance between stages, e.g. `schema_patch -> rerun` says what verification
+  must prove.
+- `ADMISSIBLE` / `PRUNED` — `diagnose -> <fix_type>` for an error type. **Derived, never asserted:** an
+  edge is PRUNED exactly when `rejections + failures >= policy.prune_after_negatives` and that sum
+  outweighs `successes`. `validate_graph` rejects any file that says otherwise, so the graph cannot
+  contradict its own evidence.
+
+**Where it plugs in.** `run_incident(..., procedures=None)` accepts an optional object exposing
+`localize(stage, error_type, proposal)` and `refine(result)`; `agent/live.py` passes
+`ProceduralGraph()`. `None` is byte-identical to the previous behaviour, which is how the existing
+tests still run unchanged.
+
+1. Before each of the two model calls, the 2-hop neighbourhood of the active node is rendered into
+   the prompt as `procedures` (JSON, under a header naming it evidence, not instructions; ~300
+   tokens). It is not a tool call and consumes no budget.
+2. After diagnose, if the proposed `fix_type` is PRUNED for this error type, Python stops with
+   `needs_human` / `terminal_event: proposal_pruned` **before** the critique and before any approval
+   request. This is §3's "never retry a rejected fix" enforced structurally across incidents; the
+   guidance makes the model avoid the repair, the guard guarantees it. Costs one model call, not two.
+3. After the terminal state, `refine(result)` runs — post-terminal like report export, outside the
+   8-tool and 3-model budgets, and unable to change the outcome. It reads the run record (not the
+   `log_incident` payload, whose shape and outcome vocabulary are unchanged) and applies fixed rules:
+
+   | `terminal_event` | graph change |
+   |---|---|
+   | `verified` (outcome `fixed`) | `successes += 1`; the exact approved fix is kept as a validated example; edge created if new |
+   | `rejected` (human said no) | `rejections += 1`; pitfall `"<incident>: rejected by human review — <note>"` |
+   | `verification_failed` (applied, rerun did not pass) | `failures += 1`; pitfall with the rerun status |
+   | `apply_failed` (tool refused the change) | pitfall with the tool's message; `refusals += 1` — informational, **not** negative evidence, because a refusal is about the exact change, not the fix type |
+   | anything else (critique disagreed, budgets, invalid output, tampered approval, `proposal_pruned`) | none |
+
+   Only humans and verified outcomes prune. Model-generated text never becomes a persistent pitfall.
+   Notes and tool messages are sanitized (control characters, bearer/secret patterns) and capped.
+
+**Commit gate ("safe offline evolution").** The candidate graph is built in memory under the file lock
+and written only if it (a) passes `validate_graph`, (b) renders every localized view under the prompt
+budget, and (c) `python -m pipeline.smoke_test` passes in a subprocess (policy
+`run_smoke_test_before_commit`, on by default). Otherwise the file is untouched and
+`procedures.refinement.reason` in the run result says why. Every commit bumps `revision` and appends a
+bounded changelog entry (incident, event, changes). Refinement is idempotent per incident id, and a
+corrupt runtime file is never overwritten (same rule as memory). Inspect or restore it with:
+
+```bash
+python -m memory_approval.procedural_graph show                     # admissible/pruned per error type, changelog
+python -m memory_approval.procedural_graph explain --error-type schema_drift [--fix-type retry_policy]
+python -m memory_approval.procedural_graph reset                    # back to the seed
+```
+
+**What it deliberately does not do.** No additional model call — the refiner is rules over human
+decisions and verified outcomes, so §1 and §3 still hold and the graph evolves deterministically. No
+change to the required tool sequence or the two reasoning calls: the "fast path" means the validated
+fix arrives as concrete evidence and pruned repairs are blocked, not that evidence steps are skipped.
+No git commit of the graph. No Slack: the rejection note is whatever `human_note` the approval channel
+returned (console, Flask page, CopilotKit). Any graph failure degrades to a warning and the run
+proceeds on evidence alone. Policy thresholds live in the graph's `policy` block, not in code.
+
+**Additive result keys:** `error_type`, `terminal_event`, `application` (`apply_fix` confirmation),
+`procedures` (`revision`, `fast_path`, `guard`, `refinement`), plus `kind: "procedure"` trace entries.
+
+**Demo beat.** Incident 1: reject the proposal with a note → `[procedural_graph] refined to revision N:
+pruned diagnose -> …`. Incident 2: the note is in the diagnose prompt, the model proposes the validated
+repair, approve → `fixed` → `reinforced …`. `show` displays the changelog between the two. If the model
+ever ignores the pitfall, the guard stops it before approval — that is the safety property, not a
+failure of the demo.

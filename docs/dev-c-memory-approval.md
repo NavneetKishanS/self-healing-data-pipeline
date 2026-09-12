@@ -12,6 +12,12 @@ disable that fallback.
 - Flask fallback UI and an AG-UI bridge used by the CopilotKit React page.
 - Optional Auth0 access-token validation and reviewer attribution.
 - Optional one-attempt, redacted Ambiguous document export.
+- Procedural graph (`procedural_graph.py` + `procedural_graph_seed.json`): admissible/pruned repair
+  transitions per error type with guidance, pitfalls, and evidence counters. Localized into the two
+  model prompts by the orchestrator; refined offline from each terminal run record (human rejections
+  and verified outcomes only) through the same locked transaction as memory, behind a validation +
+  smoke-test commit gate. Runtime copy in `runtime/procedural_graph.json`; `python -m
+  memory_approval.procedural_graph show|explain|reset` inspects it. Contract in CONTEXT.md §10.
 
 ## Install and verify
 
@@ -78,5 +84,8 @@ result = apply_fix(proposed_fix)
 ```
 
 Call `consume_approval` immediately before `apply_fix`. Do not retry an uncertain mutation.
+Pass `procedures=ProceduralGraph()` (from `memory_approval.procedural_graph`) to `run_incident` to
+enable learned guidance and the pruned-proposal guard; `agent/live.py` already does. The refiner
+receives the orchestrator's run record after the terminal state, never the `log_incident` payload.
 After a terminal outcome is known, the orchestrator may call `report_export`; export failure is
 nonfatal and must not alter the pipeline outcome.

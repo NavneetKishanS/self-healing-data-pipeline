@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "revision": 0,
+  "policy": {
+    "prune_after_negatives": 1,
+    "fast_path_min_successes": 1,
+    "run_smoke_test_before_commit": true,
+    "max_pitfalls_per_edge": 5,
+    "max_validated_fixes_per_edge": 3,
+    "max_incidents_per_edge": 20,
+    "max_changelog_entries": 50
+  },
+  "nodes": [
+    {"id": "logs", "kind": "evidence", "tool": "get_recent_logs"},
+    {"id": "schema", "kind": "evidence", "tool": "get_schema"},
+    {"id": "memory", "kind": "evidence", "tool": "search_past_incidents"},
+    {"id": "diagnose", "kind": "reasoning"},
+    {"id": "critique", "kind": "reasoning"},
+    {"id": "approval", "kind": "gate", "tool": "request_approval"},
+    {"id": "schema_patch", "kind": "fix"},
+    {"id": "config_change", "kind": "fix"},
+    {"id": "retry_policy", "kind": "fix"},
+    {"id": "rerun", "kind": "verification", "tool": "rerun_pipeline"}
+  ],
+  "edges": [
+    {
+      "source": "logs",
+      "target": "schema",
+      "relation": "LEADS_TO",
+      "condition": {"error_type": ["schema_drift", "schema_mismatch"]},
+      "guidance": "Compare the current type of the column named in the error message with the type the transform casts to.",
+      "pitfalls": ["The failure is a cast error, not missing data; do not treat it as a null problem."]
+    },
+    {
+      "source": "schema",
+      "target": "diagnose",
+      "relation": "LEADS_TO",
+      "condition": {"error_type": ["schema_drift", "schema_mismatch"]},
+      "guidance": "Name the drifted column, its observed type, and the expected type in the diagnosis; the mismatch itself is the root cause unless the logs say otherwise."
+    },
+    {
+      "source": "diagnose",
+      "target": "schema_patch",
+      "relation": "ADMISSIBLE",
+      "condition": {"error_type": ["schema_drift", "schema_mismatch"]},
+      "guidance": "Patch only the drifted column back to the type the transform expects; target must equal the affected table.",
+      "pitfalls": ["Change column types only, never column names or nullability."],
+      "evidence": {"successes": 1, "rejections": 0, "failures": 0, "refusals": 0, "incidents": ["inc_001"]},
+      "validated_fixes": [
+        {"incident_id": "inc_001", "fix": {"fix_type": "schema_patch", "target": "orders", "change": {"column": "amount", "new_type": "float"}}}
+      ]
+    },
+    {
+      "source": "diagnose",
+      "target": "retry_policy",
+      "relation": "PRUNED",
+      "condition": {"error_type": ["schema_drift", "schema_mismatch"]},
+      "pitfalls": ["inc_004: retrying does not resolve a type mismatch; the retry_policy fix was reverted."],
+      "evidence": {"successes": 0, "rejections": 0, "failures": 1, "refusals": 0, "incidents": ["inc_004"]}
+    },
+    {
+      "source": "diagnose",
+      "target": "config_change",
+      "relation": "ADMISSIBLE",
+      "condition": {"error_type": ["null_spike"]},
+      "guidance": "Restore the missing values from a trusted source rather than relaxing the null threshold.",
+      "pitfalls": ["Never make the run pass by dropping rows or disabling required-field validation."],
+      "evidence": {"successes": 1, "rejections": 0, "failures": 0, "refusals": 0, "incidents": ["inc_002"]},
+      "validated_fixes": [
+        {"incident_id": "inc_002", "fix": {"fix_type": "config_change", "target": "orders", "change": {"action": "backfill_from_cache"}}}
+      ]
+    },
+    {
+      "source": "diagnose",
+      "target": "config_change",
+      "relation": "ADMISSIBLE",
+      "condition": {"error_type": ["timeout"]},
+      "guidance": "Address the cause of the slow step; a timeout after a volume spike usually needs an index, not a longer limit.",
+      "pitfalls": ["Do not raise the timeout without evidence the new limit is appropriate."],
+      "evidence": {"successes": 1, "rejections": 0, "failures": 0, "refusals": 0, "incidents": ["inc_003"]},
+      "validated_fixes": [
+        {"incident_id": "inc_003", "fix": {"fix_type": "config_change", "target": "orders", "change": {"action": "add_index"}}}
+      ]
+    },
+    {
+      "source": "schema_patch",
+      "target": "rerun",
+      "relation": "LEADS_TO",
+      "guidance": "Verification passes only when the rerun reports success and row_count equals expected_row_count."
+    },
+    {
+      "source": "config_change",
+      "target": "rerun",
+      "relation": "LEADS_TO",
+      "guidance": "Verification passes only when the rerun reports success and row_count equals expected_row_count."
+    }
+  ],
+  "changelog": []
+}
