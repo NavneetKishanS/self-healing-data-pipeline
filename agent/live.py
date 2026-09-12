@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .model_client import LiveModel
 from .dataset import OrdersDataset
+from .iris import IrisDataset
 from .reporting import export_report
 from .workflow import run_incident
 
@@ -48,7 +49,7 @@ def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=
     if not _RUN_LOCK.acquire(blocking=False):
         raise RuntimeError("Another incident is running; shared pipeline/approval state is busy")
     try:
-        dataset = OrdersDataset(inject_failure)
+        dataset = IrisDataset(rows) if dataset_name == "iris" else OrdersDataset(inject_failure, rows=rows)
         from memory_approval import memory_store
         if procedures is None:
             from memory_approval.procedural_graph import ProceduralGraph
@@ -81,7 +82,7 @@ def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=
                               procedures=_NarratedProcedures(procedures, notify))
         result["model_requests"] = getattr(selected_model, "calls", [])
         result["integrations"] = services
-        result["limitations"] = ["Local 30-row batch from the fixture; repairs are in-memory and verified against the expected schema. No production database is connected."]
+        result["limitations"] = ["Local dataset batch; repairs are in-memory and verified against the expected schema. No production database is connected."]
         if report:
             # Prefer Dev C's exporter if it lands; otherwise use this isolated adapter.
             try:
