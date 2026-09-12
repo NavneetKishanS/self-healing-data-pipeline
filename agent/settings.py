@@ -33,6 +33,7 @@ def positive_number(name, default, integer=False):
 
 
 def integration_status():
+    from .slack import slack_status
     model = os.getenv("LLM_MODEL", DEFAULT_MODEL)
     credential = PROVIDER_KEYS.get(model.split("/", 1)[0])
     return {
@@ -41,5 +42,6 @@ def integration_status():
         if credential else "unsupported provider",
         "ambiguous": "configured, not verified" if configured("AMBIGUOUS_API_KEY") else "missing AMBIGUOUS_API_KEY",
         "auth0": "configured, not verified" if configured("AUTH0_DOMAIN") and configured("AUTH0_AUDIENCE") else "missing AUTH0_DOMAIN / AUTH0_AUDIENCE",
+        "slack": slack_status(),
         "copilotkit": "AG-UI endpoint available with serve; frontend/runtime connects separately",
     }
