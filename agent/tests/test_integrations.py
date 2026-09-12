@@ -16,6 +16,7 @@ import jwt
 
 from agent.auth import Auth0Verifier, Unauthorized, Forbidden
 from agent.model_client import LiveModel
+from agent.settings import DEFAULT_MODEL, integration_status
 from agent.live import run_live
 from agent.research_tools import search_repair_docs
 from agent.reporting import export_report
@@ -23,6 +24,38 @@ from agent.server import create_app
 
 
 class AdapterTests(unittest.TestCase):
+    def test_openrouter_uses_its_own_key_and_preserves_model_route(self):
+        completion = Mock(return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))], usage={}))
+        with patch.dict(os.environ, {
+            "LLM_MODEL": "openrouter/anthropic/claude-sonnet-4.6",
+            "OPENROUTER_API_KEY": "router-test-secret", "ANTHROPIC_API_KEY": "wrong-direct-key",
+        }, clear=True):
+            model = LiveModel(completion)
+            self.assertEqual(model(system="s", prompt="p"), "OK")
+            self.assertEqual(integration_status()["model_key"], "configured, not verified")
+        self.assertEqual(completion.call_args.kwargs["model"], "openrouter/anthropic/claude-sonnet-4.6")
+        self.assertEqual(completion.call_args.kwargs["api_key"], "router-test-secret")
+        self.assertEqual(completion.call_args.kwargs["num_retries"], 0)
+        self.assertNotIn("router-test-secret", json.dumps(model.calls))
+
+    def test_openrouter_default_requires_openrouter_key(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "direct-test-secret"}, clear=True):
+            self.assertEqual(integration_status()["model"], DEFAULT_MODEL)
+            self.assertEqual(integration_status()["model_key"], "missing OPENROUTER_API_KEY")
+            with self.assertRaisesRegex(ValueError, "OPENROUTER_API_KEY"):
+                LiveModel(Mock())
+
+    def test_openrouter_authentication_error_names_correct_key(self):
+        class AuthenticationError(Exception):
+            pass
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "router-test-secret"}, clear=True):
+            model = LiveModel(Mock(side_effect=AuthenticationError("router-test-secret")))
+            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY") as error:
+                model(system="s", prompt="p")
+        self.assertNotIn("router-test-secret", str(error.exception))
+
     def test_authentication_failure_is_actionable_without_mutation(self):
         class AuthenticationError(Exception):
             pass

@@ -12,10 +12,25 @@ uv pip install --python .venv/bin/python -r agent/requirements.txt
 
 The `run` command uses a real model, Exa, the repo's pipeline tools and incident memory, console
 approval, and Ambiguous export. It never substitutes scripted reasoning. Copy missing settings
-from `agent/env.example` into your existing root `.env` without replacing existing keys.
+from `agent/.env.example` into `agent/.env` without replacing existing keys.
 `check` reports configuration presence only; `check --model` makes one small real provider call.
 Use `--approval browser` to attach Dev C's existing local Flask page instead of the console.
 That fallback page is local development only and is not protected by Auth0.
+
+OpenRouter is the default model provider. In `agent/.env`, set:
+
+```dotenv
+LLM_MODEL=openrouter/anthropic/claude-sonnet-4.6
+OPENROUTER_API_KEY=your_key_here
+```
+
+Choose another OpenRouter chat model by setting `LLM_MODEL=openrouter/<author>/<model>`.
+For OpenRouter's free router, use `LLM_MODEL=openrouter/openrouter/free`: the first prefix selects
+LiteLLM's provider; the remaining `openrouter/free` is the actual model ID.
+This follows [LiteLLM's OpenRouter integration](https://docs.litellm.ai/docs/providers/openrouter).
+No Anthropic key is needed when routing Claude through OpenRouter. Direct `anthropic/...` and
+`openai/...` models remain supported with their respective keys. Existing shell variables override
+`agent/.env`; the repo-root `.env` is not loaded by the agent. Verify credentials with `python -B -m agent check --model`.
 
 Missing Exa credentials produce an explicit unavailable result. Missing Ambiguous credentials
 produce an unavailable report, not a fabricated document link. A missing/invalid model key stops

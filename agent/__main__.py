@@ -26,12 +26,13 @@ def main():
         if args.model:
             from .model_client import LiveModel
             model = LiveModel()
-            model.max_tokens = 16
+            model.max_tokens = min(model.max_tokens, 256)
             try:
                 reply = model(system="Reply with OK only.", prompt="Connection check.")
                 print("Model connection: responded" if reply else "Model connection: empty response")
-            except RuntimeError:
-                print("Model connection: failed (" + model.calls[-1].get("error_type", "unknown") + ")")
+            except RuntimeError as exc:
+                error_type = model.calls[-1].get("error_type", "unknown")
+                print(f"Model connection: failed ({error_type}). {exc}")
                 return 1
         return 0
     if args.command == "serve":
