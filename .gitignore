@@ -16,3 +16,4 @@ dist/
 graphify-out/
 playwright-report/
 test-results/
+.env
