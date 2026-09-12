@@ -60,7 +60,9 @@ class AdapterTests(unittest.TestCase):
             pass
 
         events = []
-        with patch.dict(os.environ, {"LLM_MODEL": "anthropic/test", "ANTHROPIC_API_KEY": "test-secret"}), \
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"LLM_MODEL": "anthropic/test", "ANTHROPIC_API_KEY": "test-secret",
+                                        "DEV_C_DATA_DIR": directory}), \
                 patch("memory_approval.memory_store.search_past_incidents", return_value={"matches": []}), \
                 patch("agent.dataset.OrdersDataset.apply_fix") as apply:
             model = LiveModel(Mock(side_effect=AuthenticationError("test-secret")))
@@ -72,6 +74,8 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["model_calls"], 1)
         apply.assert_not_called()
         self.assertIn({"stage": "get_recent_logs", "status": "returned (pipeline: failed)"}, events)
+        self.assertIn({"stage": "procedural_graph", "status": "diagnose guidance from revision 0; fast path schema_patch (1 validated); pruned retry_policy"}, events)
+        self.assertEqual(result["procedures"]["refinement"]["reason"], "Nothing to learn from this outcome")
 
     def test_live_model_uses_selected_model_and_no_hidden_retries(self):
         completion = Mock(return_value=SimpleNamespace(
