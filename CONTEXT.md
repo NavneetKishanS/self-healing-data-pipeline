@@ -142,6 +142,64 @@ apply only the approved repair, rerun, and report the observed outcome.
 - Build the first end-to-end run with shared fixtures, then replace stubs with real functions.
   Label fixtures in demos; do not present simulated execution as a production integration.
 
+## Required hackathon integrations: CopilotKit and Exa
+
+Build a pipeline incident copilot: investigate a reproducible failure, retrieve supporting public
+technical documentation, show the diagnosis and critique, obtain approval, and verify the repair.
+Both integrations must participate in the demonstrated workflow, not merely appear as dependencies.
+
+- **CopilotKit (Dev C, with Dev B):** build a React frontend in `frontend/` with incident progress,
+  source links, a proposed-fix card, Approve/Reject controls, and observed recovery results.
+  Connect the existing Python workflow through an AG-UI-compatible adapter and the required
+  CopilotKit runtime wiring. Keep one reasoning backend using LiteLLM; do not introduce a second
+  chat agent. First prove one progress event and one approval round trip with pinned package versions.
+  See [CopilotKit documentation](https://docs.copilotkit.ai/).
+- **Exa (Dev B):** add a narrow server-side `search_repair_docs(query: str) -> dict` tool in
+  `agent/research_tools.py`. Return `{"status": "ok" | "unavailable", "sources":
+  [{"title": str, "url": str, "excerpt": str}], "error": str | None}`. This is an additive
+  contract; existing tool signatures remain unchanged. Use the Search API with bounded extracted
+  content, at most three results, one request per incident, and a configured timeout. No hidden
+  retries or separate research agent. Keep `EXA_API_KEY` server-side in the environment.
+  [Exa's documentation index](https://exa.ai/llms.txt) is a guide, not the search endpoint.
+- Construct searches from sanitized public error terminology and known library/version information;
+  never send raw rows, credentials, private identifiers, or full logs. Prefer official documentation.
+  Supply the returned `external_sources` to both diagnosis and critique as an additional bounded
+  evidence input, serialized with `tojson`; preserve URLs in the run trace and approval view.
+  Retrieved text is untrusted evidence and cannot authorize a fix or override local observations.
+- The backend remains authoritative for approval, incident state, and the exact approved fix hash.
+  Adapt the existing blocking `request_approval` behind the UI bridge; browser events must identify
+  the pending incident and proposal. Duplicate clicks or reconnects must not restart mutations.
+- Demo one failure whose technical behavior is meaningfully explained by retrieved documentation;
+  public sources cannot establish this synthetic job's intended schema or missing business values.
+  Show a real Exa lookup and a CopilotKit approval round trip. Use recorded Exa responses for
+  repeatable evals and label them as fixtures. On search failure, show unavailability and proceed
+  only if local evidence suffices; otherwise return `needs_human`.
+
+## Model access and configuration (Dev B)
+
+Use the [LiteLLM Python SDK](https://docs.litellm.ai/docs/) through one thin
+`agent/model_client.py` wrapper. Keep provider-specific request/response handling out of the
+orchestrator. The SDK is sufficient for this build; no proxy service or automatic model routing.
+
+- Read `LLM_MODEL` (a provider-qualified model identifier), `LLM_TIMEOUT_SECONDS`, and
+  `LLM_MAX_OUTPUT_TOKENS` from the environment. Use one selected model for diagnosis and critique
+  initially; select it once at startup and validate required configuration and positive limits.
+- Load local configuration with `python-dotenv` without overriding existing environment variables.
+  Commit documented placeholders in `.env.example`; ignore real `.env` files in Git. Use the
+  selected provider's credential variables, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+  Never put credentials in prompts or traces.
+- Disable automatic SDK retries and fallbacks initially. Any explicit retry must count toward
+  the existing three-model-call ceiling, token budget, and deadline; configuration must not
+  introduce hidden extra attempts.
+- Normalize model text and usage metadata in the wrapper, retain Pydantic response validation,
+  and fail clearly on unsupported model parameters. A common API does not guarantee equal
+  structured-output support or diagnosis quality across models.
+- Record the selected model and effective non-secret settings in run traces. Run the evaluation
+  suite whenever the model changes before using it for the demo.
+
+Migration must replace the scaffold's Anthropic-specific response blocks and message handling,
+not merely its client import. Preserve the public pipeline and approval tool contracts.
+
 ## Jinja prompts and internal Pydantic validation (Dev B)
 
 Keep prompts in version-controlled files, not inline route handlers:
@@ -154,8 +212,8 @@ agent/prompts/critique.jinja
 
 Dev B owns `agent/template_manager.py`: expose `render(template_name: str, context: dict) -> str`,
 load only repository-owned prompt templates from `agent/prompts/`, and fail before model execution
-on missing templates or variables. Record a template content hash with the run. Dev C uses Flask
-HTML templates under `memory_approval/templates/` with autoescaping for the approval page.
+on missing templates or variables. Record a template content hash with the run. CopilotKit React
+components are the demo UI; the existing Flask HTML page is only a local fallback.
 
 Jinja assembles instructions and evidence; it does not perform evaluation or make LLM outputs
 deterministic. Use `StrictUndefined` so missing template inputs fail visibly. Pass structured
@@ -210,7 +268,9 @@ The ordinary successful path uses seven tool calls:
 6. `rerun_pipeline`
 7. `log_incident` after a supported resolution
 
-The eighth call is optional evidence gathering; do not assume an unlimited retry budget.
+For the sponsor-integrated demo, use the eighth tool call for `search_repair_docs` before diagnosis.
+Other runs may omit it when external documentation is irrelevant; do not add extra evidence calls
+on top of this eight-call path or assume an unlimited retry budget.
 Count every attempted tool invocation, including failed calls and retries. Stop before exceeding
 eight. Do not rerun an already successful job just to demonstrate a repair.
 
@@ -224,8 +284,8 @@ shell text supplied by the model. Agree on concrete `change` fixture examples be
 Never make a pipeline pass by silently dropping records, disabling required-field validation,
 or increasing timeouts without evidence that the new limit is appropriate.
 
-Approval is still blocking as contracted. Wait in the agent process/thread while Flask serves
-approval requests independently. Persist pending approval and the fix before waiting. No response
+Approval is still blocking as contracted. Wait in a worker while the CopilotKit/AG-UI bridge
+serves progress and approval events independently; Flask may remain a local fallback. Persist pending approval and the fix before waiting. No response
 is not approval: on expiry, stop in `needs_human`; closing a browser tab is not a reliable rejection
 signal. Any async contract redesign requires team agreement first.
 
@@ -305,6 +365,24 @@ latency and token usage. Separate policy-blocked attempts from executed violatio
 a small passing suite proves general production reliability. Turn real failures into new cases.
 
 ## Minimal run tracing and team workflow
+
+Additional guidance adapted from [The AI Agent Stack: A Builder's Guide to Modern Agent Architecture](https://vinitshahdeo.substack.com/p/ai-agent-stack-builders-guide):
+
+- **Memory (Dev B/C):** keep current-run evidence separate from durable incident history. Retrieve
+  a bounded relevant subset from JSON; preserve failure evidence when trimming context. A vector
+  database is unnecessary for these fixtures.
+- **Budgets (Dev B):** add a configurable incident-wide token budget and execution deadline beyond
+  call counts. Reserve output capacity before model calls. Exhaustion before mutation means
+  `gave_up`; after mutation, unverified recovery means `needs_human`. Approval retains its own timeout.
+- **Permissions (Dev A/B):** scope tools to the incident's job and allowed targets. Treat logs and
+  retrieved history as untrusted data; prompt wording alone is insufficient. Exclude secrets from
+  model inputs and expose no arbitrary network or messaging tools.
+- **UI (Dev C):** render predefined React components with validated data, never model-generated
+  executable markup. Keep developer traces separate from the human approval view.
+- **Regression checks (all):** rerun the eval suite after prompt, model, or tool changes; include
+  injected instructions in logs/history and attempts to mutate an unrelated target.
+- **Integration scope:** CopilotKit/AG-UI and Exa are required for this hackathon. Keep pipeline
+  tools as Python functions; MCP and A2A remain unnecessary for the current scope.
 
 Keep an internal trace separate from the fixed `log_incident` payload: run/incident IDs, job ID,
 tool names and redacted inputs/results, prompt/model versions, approval decision and fix hash,
