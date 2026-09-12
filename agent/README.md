@@ -26,7 +26,10 @@ stays with the workflow's single correction. At most three providers are tried p
 attempt is listed in `model_requests` with its `tier` and `stage`, and one rate-limited request
 still counts as one call against the three-call budget. Free OpenRouter IDs rotate (see
 `https://openrouter.ai/models?q=free`); `openrouter/openrouter/free` is the auto-router and the
-sensible last fallback. Run `python -B -m agent check --model` to check connectivity. The model
+sensible last fallback. Any OpenAI-compatible server is usable through the `openai/` prefix with
+`OPENAI_API_BASE` (a local gateway, for example); note that some gateways answer an unknown model ID
+with HTTP 400 rather than 404, which is a configuration error, not a fallback trigger.
+Run `python -B -m agent check --model` to check connectivity. The model
 proposes and critiques; type `approve` at the console to apply. Rejection leaves the input broken.
 Each invocation starts with a fresh dataset; repaired rows are in memory and samples appear in
 `verification.sample_rows`.
