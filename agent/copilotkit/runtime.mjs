@@ -5,6 +5,7 @@ import { HttpAgent } from "@ag-ui/client";
 export function createPipelineHandler({
   agentUrl = process.env.PIPELINE_AGENT_URL || "http://127.0.0.1:8000/agent",
   fetchSession = fetch,
+  fetchBackend = fetch,
 } = {}) {
   const handlers = new Map();
   return async function handler(request) {
@@ -21,6 +22,16 @@ export function createPipelineHandler({
     if (!session.ok) return Response.json({ error: "Unauthorized" }, { status: session.status === 403 ? 403 : 401 });
     const { sub } = await session.json();
     if (typeof sub !== "string" || !sub) return Response.json({ error: "Invalid session" }, { status: 401 });
+    const path = new URL(request.url).pathname;
+    if (/^\/api\/runs(?:\/[A-Za-z0-9_-]+(?:\/decision)?)?$/.test(path) || path === "/api/integrations") {
+      // Same-origin frontend calls for approval and status; Python rechecks permissions/owner.
+      return fetchBackend(new URL(path, agentUrl), {
+        method: request.method,
+        headers: { Authorization: request.headers.get("authorization") || "", "Content-Type": "application/json" },
+        body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(),
+        signal: AbortSignal.timeout(10000), redirect: "error",
+      });
+    }
     if (!handlers.has(sub)) {
       if (handlers.size >= 100) return Response.json({ error: "Demo session limit reached" }, { status: 503 });
       const runtime = new CopilotRuntime({

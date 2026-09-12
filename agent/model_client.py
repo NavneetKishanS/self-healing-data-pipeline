@@ -4,6 +4,7 @@ import os
 from time import monotonic
 
 from .settings import configured, positive_number
+from .errors import ModelRequestError
 
 
 class LiveModel:
@@ -14,6 +15,7 @@ class LiveModel:
         if not key_name or not configured(key_name):
             raise ValueError("Set LLM_MODEL to anthropic/... or openai/... and configure its provider key")
         self.api_key = os.environ[key_name]
+        self.key_name = key_name
         self.timeout = positive_number("LLM_TIMEOUT_SECONDS", 45)
         self.max_tokens = positive_number("LLM_MAX_OUTPUT_TOKENS", 1200, integer=True)
         if completion is None:
@@ -43,4 +45,9 @@ class LiveModel:
             # Vendor exception bodies can contain request contents; never expose them.
             self.calls.append({"model": self.model, "seconds": round(monotonic() - started, 3),
                                "status": "error", "error_type": type(exc).__name__})
-            raise RuntimeError("Live model request failed; check credentials, model access, and connectivity") from None
+            if type(exc).__name__ == "AuthenticationError":
+                raise ModelRequestError(
+                    f"Model authentication failed (AuthenticationError). Check {self.key_name}; "
+                    "an existing shell variable overrides the key in .env"
+                ) from None
+            raise ModelRequestError("Live model request failed; check credentials, model access, and connectivity") from None

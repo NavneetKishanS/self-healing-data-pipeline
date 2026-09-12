@@ -1,8 +1,34 @@
 # Agent foundation — integration boundary
 
+## Run the live integrations
+
+The live clients and runtime are implemented. Start with:
+
+```sh
+uv pip install --python .venv/bin/python -r agent/requirements.txt
+.venv/bin/python -B -m agent check
+.venv/bin/python -B -m agent run --inject-failure schema_drift
+```
+
+The `run` command uses a real model, Exa, the repo's pipeline tools and incident memory, console
+approval, and Ambiguous export. It never substitutes scripted reasoning. Copy missing settings
+from `agent/env.example` into your existing root `.env` without replacing existing keys.
+`check` reports configuration presence only; `check --model` makes one small real provider call.
+Use `--approval browser` to attach Dev C's existing local Flask page instead of the console.
+That fallback page is local development only and is not protected by Auth0.
+
+Missing Exa credentials produce an explicit unavailable result. Missing Ambiguous credentials
+produce an unavailable report, not a fabricated document link. A missing/invalid model key stops
+reasoning. The underlying data pipeline is still Dev A's synthetic scaffold: its rerun resets
+failure state, so a successful result is not independent proof of a production repair. The live
+adapter only permits the known `orders.amount` string-to-float schema repair for this demo.
+
+For CopilotKit and Auth0, see [INTEGRATIONS.md](INTEGRATIONS.md). All new backend integration code
+lives in `agent/`; Dev C's frontend, approval module, and report exporter can plug in without edits.
+
 `workflow.py` follows the fixed sequence in `CONTEXT.md`. Jinja templates are used per the user's
-latest decision, overriding the context's older statement that templating was cut. Nothing here
-imports `pipeline/`, `memory_approval/`, a vendor SDK, or `main.py`.
+latest decision, overriding the context's older statement that templating was cut. The workflow
+itself is independent of vendors; `live.py` supplies the real adapters. `main.py` is unused.
 
 ## Calling it
 
@@ -44,7 +70,8 @@ There is no global stub switch. Tests and real runs use the same workflow with d
 `call_model(*, system: str, prompt: str) -> str` returns JSON text, making at most one provider
 request per invocation. The provider adapter owns transport timeouts, credentials, and disabling
 hidden retries. The workflow owns the two reasoning stages and one shared format-correction retry.
-The foundation supplies this boundary; live model and Exa adapters are the next Dev B increment.
+`LiveModel` implements this boundary through LiteLLM and captures model usage; `research_tools.py`
+implements Exa. Both are wired by `live.py`, alongside the existing Dev A/C functions.
 
 ## Responsibilities
 

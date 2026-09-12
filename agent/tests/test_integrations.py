@@ -16,12 +16,37 @@ import jwt
 
 from agent.auth import Auth0Verifier, Unauthorized, Forbidden
 from agent.model_client import LiveModel
+from agent.live import run_live
 from agent.research_tools import search_repair_docs
 from agent.reporting import export_report
 from agent.server import create_app
 
 
 class AdapterTests(unittest.TestCase):
+    def test_authentication_failure_is_actionable_without_mutation(self):
+        class AuthenticationError(Exception):
+            pass
+
+        events = []
+        with patch.dict(os.environ, {"LLM_MODEL": "anthropic/test", "ANTHROPIC_API_KEY": "test-secret"}), \
+                patch("pipeline.tools_pipeline.get_recent_logs", return_value={
+                    "job_id": "job_1", "status": "failed", "error_type": "schema_drift",
+                    "affected_table": "orders", "expected_row_count": 3,
+                }), \
+                patch("pipeline.tools_pipeline.get_schema", return_value={"table_name": "orders", "columns": []}), \
+                patch("memory_approval.memory_store.search_past_incidents", return_value={"matches": []}), \
+                patch("agent.live.search_repair_docs", return_value={"status": "unavailable", "sources": []}), \
+                patch("pipeline.tools_pipeline.apply_fix") as apply:
+            model = LiveModel(Mock(side_effect=AuthenticationError("test-secret")))
+            result = run_live(model=model, approval=Mock(), report=False, notify=events.append)
+        self.assertIn("AuthenticationError", result["reason"])
+        self.assertIn("ANTHROPIC_API_KEY", result["reason"])
+        self.assertNotIn("test-secret", json.dumps(result))
+        self.assertEqual(result["mutation_state"], "not_attempted")
+        self.assertEqual(result["model_calls"], 1)
+        apply.assert_not_called()
+        self.assertIn({"stage": "get_recent_logs", "status": "returned (pipeline: failed)"}, events)
+
     def test_live_model_uses_selected_model_and_no_hidden_retries(self):
         completion = Mock(return_value=SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content='{"answer":true}'))],

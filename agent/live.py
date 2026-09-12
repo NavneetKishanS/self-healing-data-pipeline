@@ -25,6 +25,7 @@ def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=
             from memory_approval.approval_server import request_approval
             approval = request_approval
         selected_model = model or LiveModel()
+        services = {}
         if inject_failure:
             from pipeline.failures import inject
             from pipeline.synthetic_pipeline import reset
@@ -36,8 +37,16 @@ def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=
                 if notify:
                     notify({"stage": name, "status": "started"})
                 value = fn(**kwargs)
+                if name == "search_repair_docs":
+                    services["exa"] = {"status": value.get("status"), "error": value.get("error"),
+                                       "source_count": len(value.get("sources", []))}
                 if notify:
-                    notify({"stage": name, "status": "returned"})
+                    event = {"stage": name, "status": "returned"}
+                    if name == "search_repair_docs":
+                        event["status"] = value.get("status", "returned")
+                    elif name in ("get_recent_logs", "rerun_pipeline"):
+                        event["status"] = f"returned (pipeline: {value.get('status', 'unknown')})"
+                    notify(event)
                 return value
             return wrapped
 
@@ -69,6 +78,7 @@ def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=
         result = run_incident(job_id, incident_id=incident_id or str(uuid4()),
                               tools={name: call(name, fn) for name, fn in tools.items()}, model=selected_model)
         result["model_requests"] = getattr(selected_model, "calls", [])
+        result["integrations"] = services
         result["limitations"] = ["Pipeline is synthetic and rerun resets failure state; reported success is not independent proof of repair correctness"]
         if report:
             # Prefer Dev C's exporter if it lands; otherwise use this isolated adapter.

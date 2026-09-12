@@ -17,3 +17,22 @@ test("verified user can discover the actual registered AG-UI agent", async () =>
   const body = await response.json();
   assert.ok(JSON.stringify(body).includes("default"));
 });
+
+test("approval proxy preserves the user's identity and exact decision", async () => {
+  let forwarded;
+  const handler = createPipelineHandler({
+    fetchSession: async () => Response.json({ sub: "test-user" }),
+    fetchBackend: async (url, options) => {
+      forwarded = { url: String(url), options };
+      return Response.json({ recorded: true });
+    },
+  });
+  const body = JSON.stringify({ approved: false, fix_hash: "current-hash" });
+  const response = await handler(new Request("http://localhost/api/runs/run1/decision", {
+    method: "POST", headers: { Authorization: "Bearer user-token", "Content-Type": "application/json" }, body,
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.url, "http://127.0.0.1:8000/api/runs/run1/decision");
+  assert.equal(forwarded.options.headers.Authorization, "Bearer user-token");
+  assert.equal(new TextDecoder().decode(forwarded.options.body), body);
+});
