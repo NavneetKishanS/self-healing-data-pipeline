@@ -160,6 +160,7 @@ def run_incident(
             "incident_id": result["incident_id"], "fix_hash": approved_hash,
             "approved": approval.get("approved") is True,
             "human_note": approval.get("human_note", ""),
+            "subject": approval.get("subject") if isinstance(approval.get("subject"), str) else None,
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
         if approval.get("approved") is not True:

@@ -181,7 +181,6 @@ class ServerTests(unittest.TestCase):
         pending = self.wait_for("awaiting_approval")
         self.client.post("/api/runs/run1/decision", json={"approved": False, "fix_hash": pending["approval"]["fix_hash"]}, headers=self.headers)
         self.wait_for("finished")
-        restarted = create_app(runner=Mock(), verifier=self.app and Mock(), state_dir=self.temp.name)
         # Use loopback mode to test replay protection independently of the injected verifier.
         restarted = create_app(local_no_auth=True, runner=Mock(), state_dir=self.temp.name)
         self.assertEqual(restarted.test_client().post("/api/runs", json={"runId": "run1"}).status_code, 400)

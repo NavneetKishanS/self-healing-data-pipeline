@@ -1,0 +1,7 @@
+{
+  "name": "pipeline-copilotkit-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "node serve.mjs", "test": "node --test test.mjs"},
+  "dependencies": {"@copilotkit/runtime": "1.71.1", "@ag-ui/client": "0.0.59"}
+}

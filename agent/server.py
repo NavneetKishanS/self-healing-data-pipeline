@@ -170,7 +170,7 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                 return jsonify(error="No current undecided approval"), 409
             if data.get("fix_hash") != run["pending"]["fix_hash"]:
                 return jsonify(error="Stale or changed proposal"), 409
-            run["decision"] = {"approved": data["approved"], "human_note": note}
+            run["decision"] = {"approved": data["approved"], "human_note": note, "subject": owner}
             run["event"].set()
         return {"recorded": True}
 
