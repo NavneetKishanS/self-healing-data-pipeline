@@ -16,12 +16,46 @@ strings. Logs include actual mismatches and sample rows; the expected numeric sc
 The approved amount-to-float repair converts actual values. Rerun validates those rows without
 resetting them. Invalid numeric strings fail conversion without partial writes.
 
-Set `LLM_MODEL=openrouter/openrouter/free` and `OPENROUTER_API_KEY` in the repo-root `.env`.
-Run `python -B -m agent check --model` to check connectivity. The model proposes and critiques;
-type `approve` at the console to apply. Rejection leaves the input broken. Each invocation starts
-with a fresh dataset; repaired rows are in memory and samples appear in `verification.sample_rows`.
+Set `OPENROUTER_API_KEY` and the model tiers in the repo-root `.env` (see `.env.example`).
+`LLM_MODEL` is the primary model: every critique and every novel diagnosis. `LLM_FAST_MODEL`, when
+set, answers a diagnose call whose error type already has a validated fast path in the procedural
+graph; a correction retry after malformed output goes back to the primary. `LLM_FALLBACK_MODELS`
+(comma-separated) are tried, in order, only when a request never produced an answer — rate limit,
+outage, timeout, empty reply, or a rotated-away model ID — never after malformed content, which
+stays with the workflow's single correction. At most three providers are tried per call, every
+attempt is listed in `model_requests` with its `tier` and `stage`, and one rate-limited request
+still counts as one call against the three-call budget. Free OpenRouter IDs rotate (see
+`https://openrouter.ai/models?q=free`); `openrouter/openrouter/free` is the auto-router and the
+sensible last fallback. Any OpenAI-compatible server is usable through the `openai/` prefix with
+`OPENAI_API_BASE` (a local gateway, for example); note that some gateways answer an unknown model ID
+with HTTP 400 rather than 404, which is a configuration error, not a fallback trigger.
+Run `python -B -m agent check --model` to check connectivity. The model
+proposes and critiques; type `approve` at the console to apply. Rejection leaves the input broken.
+Each invocation starts with a fresh dataset; repaired rows are in memory and samples appear in
+`verification.sample_rows`.
 This is a synthetic orders fixture, not a production dataset. The original CSV is never modified.
 Exa has been removed. No web search is performed. Optional Ambiguous export still needs its key.
+
+### Always-on mode
+
+```sh
+.venv/bin/python -B -m agent serve --local-no-auth --watch
+```
+
+`--watch` starts the watcher (`agent/watcher.py`): the ingestion monitor's *Investigate flagged
+batch* button on a timer. It wakes when `POST /api/ingestion` flags a batch and every
+`AGENT_WATCH_INTERVAL_SECONDS` (default 30) otherwise, and starts the oldest unclaimed flagged batch
+through the same claim-and-start path the button uses, under the batch owner's identity, so the run
+shows up in that user's UI and their approve/reject click works unchanged. It idles at zero model
+calls and one SQLite query per tick. One incident runs at a time. A run that ended before any model
+answered (`terminal_event = model_error`, nothing applied, last provider error transient) is retried
+at most twice, one and five minutes later, with a fresh run ID; a human decision, an applied repair,
+or a configuration error is final. `AGENT_DAILY_MODEL_CALL_BUDGET` (default 40, UTC day) counts every
+provider request of every run the server made, watcher-started or not; once fewer than three calls
+remain, the watcher stops starting incidents until the next day. CLI runs (`python -m agent run`)
+are not counted. `GET /api/watcher` reports all of this. An approval nobody answers within
+`APPROVAL_TIMEOUT_SECONDS` ends the run as `needs_human` with `terminal_event = approval_expired`,
+which the procedural graph deliberately ignores.
 
 For CopilotKit and Auth0, see [INTEGRATIONS.md](INTEGRATIONS.md). All new backend integration code
 lives in `agent/`; Dev C's frontend, approval module, and report exporter can plug in without edits.
@@ -96,9 +130,10 @@ Results are JSON-serializable dictionaries containing `incident_id`, `job_id`, `
 `tool_calls`, `model_calls`, `error_type`, `terminal_event`, `diagnosis`, `critique`, `approval`,
 `application`, `verification`, `memory_logged`, `mutation_state`, `sources`, `warnings`,
 `prompt_versions`, `procedures` (null unless a procedural graph was supplied), and an ordered `trace`.
-`terminal_event` is the structured reason the run ended (`verified`, `rejected`, `proposal_pruned`,
-`critique_disagreed`, `apply_failed`, `verification_failed`, …); the procedural graph learns from it
-rather than from `reason` strings.
+`terminal_event` is the structured reason the run ended (`verified`, `rejected`, `approval_expired`,
+`proposal_pruned`, `critique_disagreed`, `apply_failed`, `verification_failed`, `model_error`, …);
+the procedural graph learns from it rather than from `reason` strings. The model callable receives
+routing hints as extra keyword arguments (`stage`, `fast_path`, `correction`) and may ignore them.
 `diagnosis` contains the complete diagnosis/proposal/confidence object. `trace` contains stage names,
 statuses, and elapsed seconds, not raw evidence. Model-produced diagnosis and notes can still
 contain sensitive data: the UI/report integration must redact before exporting them.

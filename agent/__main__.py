@@ -18,6 +18,8 @@ def main():
     run.add_argument("--approval", choices=["console", "browser", "reject"], default="console")
     serve = commands.add_parser("serve", help="Serve authenticated AG-UI and REST endpoints")
     serve.add_argument("--local-no-auth", action="store_true", help="Explicit loopback-only development mode")
+    serve.add_argument("--watch", action="store_true",
+                       help="Investigate flagged ingestion batches automatically, within the daily model-call budget")
     args = parser.parse_args()
     load_settings()
     print("LIVE integrations (the repo pipeline itself is synthetic).", flush=True)
@@ -37,10 +39,14 @@ def main():
         return 0
     if args.command == "serve":
         from .server import create_app
-        app = create_app(local_no_auth=args.local_no_auth)
+        app = create_app(local_no_auth=args.local_no_auth, watch=args.watch)
         port = positive_number("AGENT_PORT", 8000, integer=True)
         print(f"Agent endpoint: http://127.0.0.1:{port}/agent", flush=True)
         print("Auth: LOCAL DEVELOPMENT ONLY" if args.local_no_auth else "Auth: Auth0 access tokens required", flush=True)
+        if args.watch:
+            status = app.extensions["watcher"].status()
+            print(f"Watcher: investigating flagged batches every {status['interval_seconds']:g}s; "
+                  f"model-call budget {status['budget']['used_today']}/{status['budget']['daily_limit']} used today", flush=True)
         app.run(host="127.0.0.1", port=port, threaded=True, debug=False, use_reloader=False)
         return 0
 

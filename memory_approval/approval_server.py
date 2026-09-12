@@ -130,7 +130,10 @@ def request_approval(diagnosis: str, proposed_fix: dict, confidence: float) -> d
                 approved = approved and fix_hash(proposed_fix) == current["fix_hash"]
             except (ValueError, TypeError):
                 approved = False
-            return {"approved": approved, "human_note": current["human_note"]}
+            decision = {"approved": approved, "human_note": current["human_note"]}
+            if current["status"] == "expired":
+                decision["expired"] = True   # nobody decided; the workflow must not learn from it
+            return decision
         time.sleep(min(0.1, max(0.001, current["expires_at"] - time.time())))
 
 

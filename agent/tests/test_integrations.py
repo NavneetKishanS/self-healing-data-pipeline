@@ -41,6 +41,7 @@ class AdapterTests(unittest.TestCase):
     def test_openrouter_default_requires_openrouter_key(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "direct-test-secret"}, clear=True):
             self.assertEqual(integration_status()["model"], DEFAULT_MODEL)
+            self.assertTrue(DEFAULT_MODEL.startswith("openrouter/") and DEFAULT_MODEL.endswith("/free"))
             self.assertEqual(integration_status()["model_key"], "missing OPENROUTER_API_KEY")
             with self.assertRaisesRegex(ValueError, "OPENROUTER_API_KEY"):
                 LiveModel(Mock())
@@ -98,7 +99,67 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("test-secret", str(error.exception))
         self.assertEqual(len(model.calls), 1)
 
+    TIERS = {"LLM_MODEL": "openrouter/big/heavy:free", "LLM_FAST_MODEL": "openrouter/small/fast:free",
+             "LLM_FALLBACK_MODELS": "openrouter/openrouter/free, openrouter/big/heavy:free",
+             "OPENROUTER_API_KEY": "router-test-secret"}
 
+    @staticmethod
+    def reply(text):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))], usage={})
+
+    def test_fast_tier_serves_only_routine_diagnosis(self):
+        completion = Mock(return_value=self.reply("{}"))
+        with patch.dict(os.environ, self.TIERS, clear=True):
+            model = LiveModel(completion)
+            self.assertEqual(integration_status()["model_tiers"], {
+                "fast": ["openrouter/small/fast:free", "openrouter/big/heavy:free", "openrouter/openrouter/free"],
+                "heavy": ["openrouter/big/heavy:free", "openrouter/openrouter/free"]})
+            hints = [{"stage": "diagnose", "fast_path": True}, {"stage": "critique", "fast_path": True},
+                     {"stage": "diagnose", "fast_path": False}, {"stage": "diagnose", "fast_path": True, "correction": True}, {}]
+            for hint in hints:
+                model(system="s", prompt="p", **hint)
+        self.assertEqual([call.kwargs["model"] for call in completion.call_args_list],
+                         ["openrouter/small/fast:free"] + ["openrouter/big/heavy:free"] * 4)
+        self.assertEqual([(c["tier"], c["stage"], c["status"]) for c in model.calls][:2],
+                         [("fast", "diagnose", "returned"), ("heavy", "critique", "returned")])
+        with patch.dict(os.environ, {"LLM_MODEL": "anthropic/test", "ANTHROPIC_API_KEY": "k"}, clear=True):
+            self.assertEqual(integration_status()["model_tiers"], {"fast": "same as heavy", "heavy": ["anthropic/test"]})
+            self.assertEqual(LiveModel(Mock()).tier({"stage": "diagnose", "fast_path": True}), "heavy")
+
+    def test_transport_failures_fall_back_within_the_call_but_content_failures_do_not(self):
+        class RateLimitError(Exception):
+            pass
+
+        class BadRequestError(Exception):
+            pass
+
+        with patch.dict(os.environ, self.TIERS, clear=True):
+            completion = Mock(side_effect=[RateLimitError("router-test-secret"), self.reply("  "), self.reply("ok")])
+            model = LiveModel(completion)
+            self.assertEqual(model(system="s", prompt="p", stage="diagnose", fast_path=True), "ok")
+            self.assertEqual([call.kwargs["model"] for call in completion.call_args_list],
+                             ["openrouter/small/fast:free", "openrouter/big/heavy:free", "openrouter/openrouter/free"])
+            self.assertEqual([(c["status"], c.get("error_type")) for c in model.calls],
+                             [("fallback", "RateLimitError"), ("fallback", "EmptyResponse"), ("returned", None)])
+            self.assertNotIn("router-test-secret", json.dumps(model.calls))
+
+            exhausted = LiveModel(Mock(side_effect=RateLimitError("x")))
+            with self.assertRaisesRegex(RuntimeError, "every configured model"):
+                exhausted(system="s", prompt="p", stage="critique")
+            self.assertEqual([c["status"] for c in exhausted.calls], ["fallback", "error"])
+
+            content = LiveModel(Mock(side_effect=BadRequestError("x")))
+            with self.assertRaises(RuntimeError):
+                content(system="s", prompt="p", stage="critique")
+            self.assertEqual(len(content.calls), 1)
+
+    def test_every_tier_model_needs_its_provider_key(self):
+        with patch.dict(os.environ, {**self.TIERS, "LLM_FALLBACK_MODELS": "anthropic/claude"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "ANTHROPIC_API_KEY for anthropic/claude"):
+                LiveModel(Mock())
+        with patch.dict(os.environ, {**self.TIERS, "LLM_FAST_MODEL": "mystery/model"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "LLM_FAST_MODEL"):
+                LiveModel(Mock())
 
     def test_ambiguous_sends_document_once_and_redacts_configured_secrets(self):
         response = httpx.Response(201, json={"id": "doc_123"}, request=httpx.Request("POST", "https://app.ambiguous.ai/api/documents"))

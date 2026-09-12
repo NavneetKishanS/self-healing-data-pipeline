@@ -25,7 +25,8 @@ Dev B owns the files in `agent/`. This adds no frontend and does not change Dev 
 
 Configure credentials in the repo-root `.env`.
 The default LLM uses OpenRouter: set `OPENROUTER_API_KEY` and choose a chat model using
-`LLM_MODEL=openrouter/<author>/<model>` (default: `openrouter/anthropic/claude-sonnet-4.6`).
+`LLM_MODEL=openrouter/<author>/<model>:free` (default: `openrouter/openrouter/free`, the free auto-router);
+see `.env.example` for the free-tier tier layout (`LLM_FAST_MODEL`, `LLM_FALLBACK_MODELS`).
 Auth0's domain/client ID are public configuration, while vendor API keys remain server-side.
 Dev C supplies the frontend's Auth0 application/client ID and configured login/logout callbacks.
 Configure an Auth0 API with the chosen `AUTH0_AUDIENCE` and grant the appropriate permissions:
@@ -100,6 +101,13 @@ REST clients can alternatively start with `POST /api/runs` and
 `{"runId":"unique-id","job_id":"job_1","inject_failure":"schema_drift"}`, then poll
 `GET /api/runs/<id>`. Runs are serialized. After a process restart, the saved outcome is readable,
 but pending work is not automatically resumed; used run IDs cannot start another repair.
+
+With `serve --watch`, flagged ingestion batches start their own run under the batch owner's identity
+(see `agent/README.md`, "Always-on mode"); the approval card and decision endpoint are the same.
+`GET /api/watcher` (read:incidents) reports whether the watcher is running, today's model-call budget,
+the retry policy and the last tick. An approval nobody answers before `APPROVAL_TIMEOUT_SECONDS`
+returns `{"approved": false, "expired": true}` to the workflow, which ends the run as `needs_human`
+with `terminal_event: "approval_expired"` — distinct from a rejection, so the procedural graph ignores it.
 
 ## Verification and limits
 

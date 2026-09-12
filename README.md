@@ -42,6 +42,17 @@ python -m memory_approval.procedural_graph show                      # admissibl
 python -m memory_approval.procedural_graph explain --error-type schema_drift
 ```
 
+## Always-on mode (free models only)
+
+`python -m agent serve --watch` turns the one-shot CLI into an on-call agent. A watcher thread
+(`agent/watcher.py`) idles at zero model calls, wakes when an ingested batch is flagged, and starts the
+investigation the *Investigate flagged batch* button would have started — same claim, same run, same
+approval card in the UI. The model client routes between tiers of free OpenRouter models: a validated
+fast path in the procedural graph sends the diagnosis to `LLM_FAST_MODEL`; novel incidents and every
+critique use `LLM_MODEL`; rate limits and outages fall through `LLM_FALLBACK_MODELS` within the same
+call. Free OpenRouter models allow 50 requests a day, so the server keeps a daily model-call budget and
+retries only runs that never got a model answer. Setup in `.env.example`; rules in CONTEXT.md §11.
+
 ## Repo layout
 
 ```
