@@ -6,11 +6,9 @@ Dev B owns the files in `agent/`. This adds no frontend and does not change Dev 
 
 - Model: `model_client.LiveModel` calls LiteLLM with the selected `LLM_MODEL`, a real provider key,
   an explicit timeout/output cap, and zero SDK retries. Jinja produces both model requests.
-- Exa: `research_tools.search_repair_docs` calls `https://api.exa.ai/search` once with at most
-  three results. Returned sources feed diagnosis and critique. No raw log text enters queries.
-- Pipeline/memory: `live.run_live` imports the existing public functions. There is no stub switch.
-  A process lock prevents overlapping incidents against their shared state. The known schema-drift
-  repair is constrained in this adapter while Dev A finishes general mutation validation.
+- Dataset: `dataset.OrdersDataset` loads the first 30 rows of the team's orders CSV, injects string values,
+  converts approved numeric strings, and validates the actual rows against an unchanged schema.
+  Dev A's pipeline files are untouched. Exa is removed; no external research is performed.
 - Ambiguous: `reporting.export_report` creates a document at
   `https://app.ambiguous.ai/api/documents` after termination. SQLite under ignored `agent/.state/`
   prevents automatic repeats of a sent or uncertain export. Known environment secrets are redacted;
@@ -25,7 +23,7 @@ Dev B owns the files in `agent/`. This adds no frontend and does not change Dev 
 
 ## Configuration
 
-Merge `agent/.env.example` into the repo-root `.env`; never overwrite an existing credential file.
+Configure credentials in the repo-root `.env`.
 The default LLM uses OpenRouter: set `OPENROUTER_API_KEY` and choose a chat model using
 `LLM_MODEL=openrouter/<author>/<model>` (default: `openrouter/anthropic/claude-sonnet-4.6`).
 Auth0's domain/client ID are public configuration, while vendor API keys remain server-side.

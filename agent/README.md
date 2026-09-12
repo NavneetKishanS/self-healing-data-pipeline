@@ -10,33 +10,18 @@ uv pip install --python .venv/bin/python -r agent/requirements.txt
 .venv/bin/python -B -m agent run --inject-failure schema_drift
 ```
 
-The `run` command uses a real model, Exa, the repo's pipeline tools and incident memory, console
-approval, and Ambiguous export. It never substitutes scripted reasoning. Copy missing settings
-from `agent/.env.example` into the repo-root `.env` without replacing existing keys.
-`check` reports configuration presence only; `check --model` makes one small real provider call.
-Use `--approval browser` to attach Dev C's existing local Flask page instead of the console.
-That fallback page is local development only and is not protected by Auth0.
+The run uses the first 30 rows of the existing `pipeline/fixtures/orders.csv` dataset, loaded into typed
+in-memory rows by `agent/dataset.py`. `--inject-failure schema_drift` turns numeric amounts into
+strings. Logs include actual mismatches and sample rows; the expected numeric schema stays fixed.
+The approved amount-to-float repair converts actual values. Rerun validates those rows without
+resetting them. Invalid numeric strings fail conversion without partial writes.
 
-OpenRouter is the default model provider. In the repo-root `.env`, set:
-
-```dotenv
-LLM_MODEL=openrouter/anthropic/claude-sonnet-4.6
-OPENROUTER_API_KEY=your_key_here
-```
-
-Choose another OpenRouter chat model by setting `LLM_MODEL=openrouter/<author>/<model>`.
-For OpenRouter's free router, use `LLM_MODEL=openrouter/openrouter/free`: the first prefix selects
-LiteLLM's provider; the remaining `openrouter/free` is the actual model ID.
-This follows [LiteLLM's OpenRouter integration](https://docs.litellm.ai/docs/providers/openrouter).
-No Anthropic key is needed when routing Claude through OpenRouter. Direct `anthropic/...` and
-`openai/...` models remain supported with their respective keys. Existing shell variables override
-the repo-root `.env`; `agent/.env` is not loaded. Verify credentials with `python -B -m agent check --model`.
-
-Missing Exa credentials produce an explicit unavailable result. Missing Ambiguous credentials
-produce an unavailable report, not a fabricated document link. A missing/invalid model key stops
-reasoning. The underlying data pipeline is still Dev A's synthetic scaffold: its rerun resets
-failure state, so a successful result is not independent proof of a production repair. The live
-adapter only permits the known `orders.amount` string-to-float schema repair for this demo.
+Set `LLM_MODEL=openrouter/openrouter/free` and `OPENROUTER_API_KEY` in the repo-root `.env`.
+Run `python -B -m agent check --model` to check connectivity. The model proposes and critiques;
+type `approve` at the console to apply. Rejection leaves the input broken. Each invocation starts
+with a fresh dataset; repaired rows are in memory and samples appear in `verification.sample_rows`.
+This is a synthetic orders fixture, not a production dataset. The original CSV is never modified.
+Exa has been removed. No web search is performed. Optional Ambiguous export still needs its key.
 
 For CopilotKit and Auth0, see [INTEGRATIONS.md](INTEGRATIONS.md). All new backend integration code
 lives in `agent/`; Dev C's frontend, approval module, and report exporter can plug in without edits.
@@ -56,7 +41,7 @@ For a narrated, interactive example with no API keys, run from the repository ro
 This uses the real workflow with a three-order in-memory fixture and scripted model responses.
 Type `approve` at the prompt to repair the fixture, or reject to leave it untouched. Nothing is
 saved. Use `--decision approve` or `--decision reject` for a noninteractive run, and
-`--show-prompts` to inspect the actual Jinja-rendered requests. No live model or Exa calls occur.
+`--show-prompts` to inspect the actual Jinja-rendered requests. No live model calls occur.
 
 ```python
 from agent import run_incident
@@ -68,7 +53,6 @@ result = run_incident(
         "get_recent_logs": get_recent_logs,
         "get_schema": get_schema,
         "search_past_incidents": search_past_incidents,
-        "search_repair_docs": search_repair_docs,  # optional
         "request_approval": request_approval,
         "apply_fix": apply_fix,
         "rerun_pipeline": rerun_pipeline,
@@ -85,15 +69,14 @@ There is no global stub switch. Tests and real runs use the same workflow with d
 `call_model(*, system: str, prompt: str) -> str` returns JSON text, making at most one provider
 request per invocation. The provider adapter owns transport timeouts, credentials, and disabling
 hidden retries. The workflow owns the two reasoning stages and one shared format-correction retry.
-`LiveModel` implements this boundary through LiteLLM and captures model usage; `research_tools.py`
-implements Exa. Both are wired by `live.py`, alongside the existing Dev A/C functions.
+`LiveModel` implements this boundary through LiteLLM; `live.py` connects it to the dataset adapter and incident memory.
 
 ## Responsibilities
 
 - Dev A: implement the four pipeline functions, validate actual supported mutations, and make
   reruns evaluate post-fix state. This workflow never resets the pipeline. It checks matching job,
   successful status, and exact expected row count for the current full-refresh fixtures.
-- Dev B: maintain workflow order, prompts, model output checks, research input, and terminal states.
+- Dev B: maintain workflow order, prompts, model output checks, dataset evidence, and terminal states.
   `prompts.render(name, **context)` manages the three repository-owned Jinja text templates;
   missing variables fail explicitly, and tool evidence is JSON data rather than template source.
 - Dev C: provide memory and a blocking approval function. Bind browser decisions to the caller's

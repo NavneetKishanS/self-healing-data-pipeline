@@ -160,29 +160,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(f.run()["outcome"], "needs_human")
         self.assertEqual(f.incidents, [])
 
-    def test_optional_research_uses_eighth_call_and_both_prompts(self):
-        f = Fixture()
-        f.logs["error_message"] += " PRIVATE_SECRET"
-        def research(query):
-            self.assertNotIn("PRIVATE_SECRET", query)
-            return {"status": "ok", "sources": [{"title": "Docs", "url": "https://example.com/docs",
-                                                  "excerpt": "DOC_EVIDENCE"}], "error": None}
-        f.tools["search_repair_docs"] = research
-        result = f.run()
-        self.assertEqual(result["tool_calls"], 8)
-        self.assertEqual(result["model_calls"], 2)
-        for prompt in f.prompts:
-            self.assertIn("DOC_EVIDENCE", prompt["prompt"])
 
-    def test_research_failure_is_nonfatal_and_not_retried(self):
-        f = Fixture()
-        def research(query):
-            raise TimeoutError("secret")
-        f.tools["search_repair_docs"] = research
-        result = f.run()
-        self.assertEqual((result["outcome"], result["tool_calls"]), ("fixed", 8))
-        self.assertEqual(result["sources"], [])
-        self.assertEqual(len(result["warnings"]), 1)
 
     def test_memory_failure_does_not_replay_verified_repair(self):
         f = Fixture()

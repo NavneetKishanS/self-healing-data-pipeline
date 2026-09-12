@@ -39,7 +39,6 @@ def integration_status():
         "model": model,
         "model_key": ("configured, not verified" if configured(credential) else f"missing {credential}")
         if credential else "unsupported provider",
-        "exa": "configured, not verified" if configured("EXA_API_KEY") else "missing EXA_API_KEY",
         "ambiguous": "configured, not verified" if configured("AMBIGUOUS_API_KEY") else "missing AMBIGUOUS_API_KEY",
         "auth0": "configured, not verified" if configured("AUTH0_DOMAIN") and configured("AUTH0_AUDIENCE") else "missing AUTH0_DOMAIN / AUTH0_AUDIENCE",
         "copilotkit": "AG-UI endpoint available with serve; frontend/runtime connects separately",
