@@ -315,7 +315,12 @@ costs zero implementation hours and still shows the thinking.
 
 ---
 
-## 7. Today's execution plan (T+0:00 → T+5:00)
+## 7. Original execution plan (T+0:00 → T+5:00) — superseded, see §9
+
+This was the 3-dev plan for the original 5-hour build window. Left in place as the historical
+record of what was actually executed — most of it landed (pipeline, orchestrator, memory/approval
+core, Exa, Auth0, Ambiguous, CopilotKit code all exist now). **For the current team size and time
+remaining, follow §9, not the table below.**
 
 Shared rules:
 - Sync every 60 minutes, 5 minutes max: what's done, what's at risk, what's blocking someone else.
@@ -370,3 +375,69 @@ Each developer works in a separate clone/branch, owns their directory, and coord
 schemas or fixture changes before making them. Merge small increments and exercise one end-to-end
 fixture regularly. Preserve the public contracts in §2 unless all affected developers agree to an
 update in the team channel first.
+
+---
+
+## 9. Amendment — 4 devs, T-4:00 to submission (supersedes §7)
+
+Team grew from 3 to 4 partway through the build. This section is the current source of truth for
+remaining work and ownership; §7 stays only as a record of what already happened.
+
+### Verified status as of this amendment
+
+- ✅ **Pipeline** (`pipeline/`) — real, fixture-backed (`pipeline/fixtures/orders.csv`), hardened,
+  `python -m pipeline.smoke_test` passes (12 checks, no API key).
+- ✅ **Agent orchestrator** (`agent/workflow.py`) — correctly implements the fixed sequence from §0:
+  model called at most 3× (diagnose, critique, one correction retry), approval bound to a fix
+  hash, rerun checked against expected row count, terminal states exactly `fixed`/`needs_human`/
+  `gave_up`. 57 tests + 20 subtests pass (`agent/tests/`, `tests/`).
+- ✅ **Memory + approval core** (`memory_approval/`) — real: `search_past_incidents`,
+  `log_incident`, Flask approval page (blocking poll, timeout-safe, defaults to reject on timeout).
+- ✅ **Exa** (`agent/research_tools.py`) — code correct per §4 (bounded, optional, degrades
+  gracefully) but **not yet live**: no `EXA_API_KEY` in the repo-root `.env` that
+  `agent/settings.py` actually loads.
+- ✅ **Auth0** (`memory_approval/auth.py`) — real JWKS token verification implemented, not yet
+  configured (`AUTH0_DOMAIN`/`AUTH0_AUDIENCE` unset).
+- ✅ **Ambiguous** (`memory_approval/report_export.py`) — real, redacted export implemented, not
+  yet configured (`AMBIGUOUS_API_KEY` unset) or fired against the live endpoint.
+- ⚠️ **CopilotKit + AG-UI frontend** (`frontend/`, `agent/copilotkit/`) — full React + Auth0 +
+  AG-UI wiring exists. Not yet verified to actually round-trip a real approve/reject click against
+  `python -m agent serve`.
+- ❌ **`main.py` (repo root) is broken.** It imports `agent.agent_loop` and `agent.tool_registry`,
+  both deleted when the orchestrator was rewritten to `agent/workflow.py`. The real entrypoint now
+  is `python -m agent run --inject-failure schema_drift --approval console` (or `--approval
+  browser` for Dev C's Flask page) and `python -m agent serve` for the full server. Fix or delete
+  `main.py` before anyone rehearses with the old command.
+- ℹ️ A real Exa key was briefly committed in `agent/.env` and pushed to this (public) repo. It has
+  since been rotated — the copy still in git history is dead and not urgent to scrub, but don't
+  reuse that value.
+
+### New decision: add OpenRouter as a model provider
+
+We have $5 of real OpenRouter credit. `agent/model_client.py` already runs on LiteLLM, which
+supports OpenRouter natively via a `openrouter/<provider>/<model>` model string and an
+`OPENROUTER_API_KEY` env var — but `agent/settings.py`'s credential map only recognizes
+`anthropic`/`openai` prefixes today, so `LLM_MODEL=openrouter/...` currently fails fast with
+"Set LLM_MODEL to anthropic/... or openai/... and configure its provider key".
+
+Plan: add `"openrouter": "OPENROUTER_API_KEY"` to the credential map in both
+`LiveModel.__init__` and `integration_status()`. Use a cheap OpenRouter model as the default for
+diagnose/critique; keep `ANTHROPIC_API_KEY` configured as a fallback/escalation path. No change to
+the correction-retry logic in `workflow.py` for now — `MAX_MODEL_CALLS=3` already bounds worst-case
+spend regardless of which provider is behind `LLM_MODEL`. Not yet implemented as of this amendment.
+
+Note for the record (not urgent to fix): `agent/model_client.py` runs on LiteLLM, which §5 above
+explicitly cut ("Direct SDK calls are fine... a wrapper layer is pure ceremony"). It works and is
+tested, so leave it — just don't cite §5 as describing the current model_client.py.
+
+### Remaining work, split 4 ways
+
+| Owner | Task | Done when |
+|---|---|---|
+| **Dev A** | Fix or delete `main.py` (point at `python -m agent run`/`serve`); own final integration verification and rehearsal | `main.py` no longer crashes or is gone; 2 clean full run-throughs recorded |
+| **Dev B** | Wire OpenRouter support (`agent/settings.py`, `agent/model_client.py`), populate root `.env` with a live Exa key + model key, run the first real end-to-end incident | `python -m agent run --inject-failure schema_drift --approval console` returns `fixed` using real model + Exa calls |
+| **Dev C** | CopilotKit ↔ Auth0, in that sequenced order (per §4's hard stops) | Real approve/reject click round-trips through `agent/copilotkit` + `frontend/` against `python -m agent serve`; Auth0 gates that one route if CopilotKit lands |
+| **Dev D** | Ambiguous: fire one real request first (per §4's "verify-before-build"), confirm or kill it; then float to whichever of B/C is behind | You know the real Ambiguous response shape, or it's confirmed dead and dropped |
+
+Feature freeze and pre-submission checklist from §7 still apply — nothing here changes what
+"done" looks like for the demo, only who's doing what and how much time is left to do it.
