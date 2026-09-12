@@ -27,9 +27,10 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from .settings import integration_status, positive_number
 from .validation import fingerprint
+from .watcher import Watcher
 
 
-def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir=None):
+def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir=None, watch=False):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
     auth = None if local_no_auth else (verifier or Auth0Verifier())
@@ -49,6 +50,19 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
         with updates:
             revisions[owner] = revisions.get(owner, 0) + 1
             updates.notify_all()
+
+    def busy():
+        with lock:
+            return any(r["status"] != "finished" for r in runs.values())
+
+    def investigate_locked(batch_id, owner, again=False):
+        with ingestion_lock:
+            return investigate(batch_id, owner, again=again)
+
+    watcher = Watcher(database, investigate=investigate_locked, busy=busy,
+                      interval=positive_number("AGENT_WATCH_INTERVAL_SECONDS", 30),
+                      budget=positive_number("AGENT_DAILY_MODEL_CALL_BUDGET", 40, integer=True))
+    app.extensions["watcher"] = watcher
 
     def identity(permission):
         if local_no_auth:
@@ -123,7 +137,7 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                 run["queue"].put(snapshot(run))
             run["event"].wait(timeout)
             with lock:
-                decision = run["decision"] or {"approved": False, "human_note": "Approval expired"}
+                decision = run["decision"] or {"approved": False, "human_note": "Approval expired", "expired": True}
                 run["pending"] = None
                 run["status"] = "running"
                 return deepcopy(decision)
@@ -141,7 +155,9 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                 run["status"] = "finished"
                 with sqlite3.connect(database) as db:
                     db.execute("UPDATE runs SET status='finished', result=? WHERE id=?", (json.dumps(result), run_id))
+                watcher.charge(result)  # before anyone can observe "finished", so the budget never lags
                 run["queue"].put(snapshot(run))
+            watcher.wake()
         Thread(target=worker, daemon=True).start()
         return run
 
@@ -196,6 +212,8 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
             db.execute("INSERT INTO ingestion VALUES (?, ?, ?, ?, ?, NULL)",
                        (batch_id, owner, payload, json.dumps(result), result["created_at"]))
         changed(owner)
+        if errors:
+            watcher.wake()
         return jsonify(result), 201
 
     @app.post("/api/ingestion/replay")
@@ -301,24 +319,33 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
 
     @app.post("/api/ingestion/<batch_id>/investigate")
     def investigate_batch(batch_id):
-        with ingestion_lock:
-            return start_batch_investigation(batch_id)
-
-    def start_batch_investigation(batch_id):
         owner = identity("run:incidents")
+        return investigate_locked(batch_id, owner)
+
+    @app.get("/api/watcher")
+    def watcher_status():
+        identity("read:incidents")
+        return watcher.status()
+
+    def investigate(batch_id, owner, *, again=False):
+        """Claim a flagged batch and start its incident. `again` re-claims a batch whose previous
+        run is finished; the watcher passes it only for runs that ended before any model answered."""
         with sqlite3.connect(database) as db:
             row = db.execute("SELECT payload,result,run_id FROM ingestion WHERE id=? AND owner=?", (batch_id, owner)).fetchone()
             if not row:
                 raise Forbidden("Batch not available to this user")
             if json.loads(row[1])["status"] != "schema_drift":
                 raise ValueError("Batch has no schema drift")
-            run_id = row[2] or str(uuid4())
+            previous = row[2]
+            if previous and not again:
+                return {"incident_id": previous}
+            run_id = str(uuid4())
             # Claim once before starting. A restart never replays uncertain work.
-            if not row[2]:
-                db.execute("UPDATE ingestion SET run_id=? WHERE id=? AND owner=? AND run_id IS NULL", (run_id, batch_id, owner))
-                db.commit()
-        if row[2]:
-            return {"incident_id": run_id}
+            claimed = db.execute("UPDATE ingestion SET run_id=? WHERE id=? AND owner=? AND run_id IS ?",
+                                 (run_id, batch_id, owner, previous))
+            db.commit()
+            if claimed.rowcount != 1:
+                raise ValueError("Batch was claimed by another investigation")
         try:
             stored = json.loads(row[0])
             rows = stored["rows"] if isinstance(stored, dict) else stored
@@ -328,8 +355,9 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
             with sqlite3.connect(database) as db:
                 exists = db.execute("SELECT id FROM runs WHERE id=?", (run_id,)).fetchone()
                 if not exists:
-                    db.execute("UPDATE ingestion SET run_id=NULL WHERE id=? AND owner=?", (batch_id, owner))
+                    db.execute("UPDATE ingestion SET run_id=? WHERE id=? AND owner=?", (previous, batch_id, owner))
             raise
+        changed(owner)  # the batch's run_id moved, possibly with no click; push it to the live stream
         return {"incident_id": run["id"]}
 
     @app.post("/api/runs")
@@ -414,4 +442,6 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                     run["streaming"] = False
         return Response(events(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    if watch:
+        watcher.start()
     return app

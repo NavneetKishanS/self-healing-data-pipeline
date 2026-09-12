@@ -43,7 +43,7 @@ def main():
         print("3. MEMORY: No previous incidents in this fresh demo.")
         return {"matches": list(memory)}
 
-    def model(*, system, prompt):
+    def model(*, system, prompt, **hints):
         if args.show_prompts:
             print("\n--- Rendered Jinja request ---\n" + system + "\n" + prompt + "\n--- End request ---")
         answer = next(answers)

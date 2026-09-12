@@ -28,7 +28,10 @@ def run_incident(
 ) -> dict:
     """Run the CONTEXT.md sequence using supplied functions.
 
-    model(system=str, prompt=str) -> JSON text; at most one provider request per call.
+    model(system=str, prompt=str, **hints) -> JSON text; one reasoning request per call. The hints
+    (stage, fast_path, correction) let a client route between configured models; a client may retry
+    a request that produced no answer (rate limit, outage, empty reply) against a fallback model,
+    never a request whose answer was malformed.
     tools use exactly the keyword names in CONTEXT.md.
     procedures (optional) is a procedural graph exposing localize(stage, error_type, proposal)
     and refine(result); see memory_approval/procedural_graph.py. It shapes the two prompts and
@@ -88,12 +91,13 @@ def run_incident(
         nonlocal correction_used
         prompt = prompts.render(name, evidence=evidence, proposal=proposal,
                                 procedures=guidance["procedures"] if guidance else None)
+        hints = {"stage": name, "fast_path": bool(guidance and guidance.get("fast_path")), "correction": False}
         while True:
             if result["model_calls"] >= MAX_MODEL_CALLS:
                 raise _Stop("gave_up", "Model-call budget exhausted", "budget_exhausted")
             result["model_calls"] += 1
             try:
-                text = model(system=prompts.render("system"), prompt=prompt)
+                text = model(system=prompts.render("system"), prompt=prompt, **hints)
             except Exception:
                 record("model", name, "error")
                 raise
@@ -104,6 +108,7 @@ def run_incident(
                 if correction_used:
                     raise _Stop("gave_up", "Model output remained invalid after the shared correction allowance", "model_invalid")
                 correction_used = True
+                hints["correction"] = True
                 prompt += "\nCorrection: " + str(exc) + ". Return only the required JSON object."
             else:
                 record("model", name, "valid")
@@ -175,6 +180,9 @@ def run_incident(
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
         if approval.get("approved") is not True:
+            if approval.get("expired") is True:
+                # Nobody decided. That is not a rejection, so the procedural graph must not learn from it.
+                raise _Stop("needs_human", "No human decision arrived before the approval expired", "approval_expired")
             raise _Stop("needs_human", "Repair was not approved", "rejected")
         if fingerprint(approval_payload) != approved_hash:
             result["approval"]["approved"] = False

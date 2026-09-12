@@ -101,6 +101,13 @@ REST clients can alternatively start with `POST /api/runs` and
 `GET /api/runs/<id>`. Runs are serialized. After a process restart, the saved outcome is readable,
 but pending work is not automatically resumed; used run IDs cannot start another repair.
 
+With `serve --watch`, flagged ingestion batches start their own run under the batch owner's identity
+(see `agent/README.md`, "Always-on mode"); the approval card and decision endpoint are the same.
+`GET /api/watcher` (read:incidents) reports whether the watcher is running, today's model-call budget,
+the retry policy and the last tick. An approval nobody answers before `APPROVAL_TIMEOUT_SECONDS`
+returns `{"approved": false, "expired": true}` to the workflow, which ends the run as `needs_human`
+with `terminal_event: "approval_expired"` — distinct from a rejection, so the procedural graph ignores it.
+
 ## Verification and limits
 
 ```sh

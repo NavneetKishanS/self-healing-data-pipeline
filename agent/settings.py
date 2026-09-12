@@ -32,13 +32,27 @@ def positive_number(name, default, integer=False):
     return value
 
 
+def model_tiers():
+    """Ordered model IDs per tier. LLM_MODEL is the primary ("heavy") model; LLM_FAST_MODEL, when
+    set, answers diagnose calls that already have a validated fast path; LLM_FALLBACK_MODELS is a
+    comma-separated list tried in order when a request never produces an answer."""
+    heavy = os.getenv("LLM_MODEL", DEFAULT_MODEL).strip()
+    fast = os.getenv("LLM_FAST_MODEL", "").strip() or heavy
+    fallbacks = [name.strip() for name in os.getenv("LLM_FALLBACK_MODELS", "").split(",") if name.strip()]
+    tiers = {"heavy": [heavy, *fallbacks], "fast": [fast, heavy, *fallbacks]}
+    return {tier: list(dict.fromkeys(chain)) for tier, chain in tiers.items()}
+
+
 def integration_status():
     model = os.getenv("LLM_MODEL", DEFAULT_MODEL)
     credential = PROVIDER_KEYS.get(model.split("/", 1)[0])
+    tiers = model_tiers()
     return {
         "model": model,
         "model_key": ("configured, not verified" if configured(credential) else f"missing {credential}")
         if credential else "unsupported provider",
+        "model_tiers": {"fast": tiers["fast"] if tiers["fast"] != tiers["heavy"] else "same as heavy",
+                        "heavy": tiers["heavy"]},
         "ambiguous": "configured, not verified" if configured("AMBIGUOUS_API_KEY") else "missing AMBIGUOUS_API_KEY",
         "auth0": "configured, not verified" if configured("AUTH0_DOMAIN") and configured("AUTH0_AUDIENCE") else "missing AUTH0_DOMAIN / AUTH0_AUDIENCE",
         "copilotkit": "AG-UI endpoint available with serve; frontend/runtime connects separately",

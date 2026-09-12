@@ -523,3 +523,70 @@ pruned diagnose -> …`. Incident 2: the note is in the diagnose prompt, the mod
 repair, approve → `fixed` → `reinforced …`. `show` displays the changelog between the two. If the model
 ever ignores the pitfall, the guard stops it before approval — that is the safety property, not a
 failure of the demo.
+
+---
+
+## 11. Amendment — always-on watcher and free-model tiers
+
+§0's sequence is unchanged, but it only ran when someone typed `python -m agent run` or clicked
+*Investigate flagged batch*, and `agent/model_client.py` sent every call to one model. This amendment
+makes the server watch its own ingestion table and route between free OpenRouter models. We have no
+paid model access, so the tiers are about latency and rate limits, not dollars: every free model
+shares one cap of 20 requests per minute and 50 per day (1000 once an account has bought $10 of
+credit). Model IDs on the free roster rotate weekly, so nothing here hard-codes one.
+
+**Watcher (`agent/watcher.py`, `python -m agent serve --watch`).** A thread inside the server, not a
+second process: `_RUN_LOCK`, the runs table and the AG-UI queues are process-local. It wakes when
+`POST /api/ingestion` flags a batch and every `AGENT_WATCH_INTERVAL_SECONDS` otherwise, and starts the
+oldest unclaimed `schema_drift` batch through the same `investigate()` path the button uses, as the
+batch's owner, so ownership, approval and the UI are untouched. Idle cost: zero model calls, one SQLite
+query. Rules:
+
+- One incident at a time (§2's serialization rule), FIFO by ingestion time.
+- Retry only a run with `terminal_event = model_error`, `application = null`,
+  `mutation_state = not_attempted` and a transient last provider error: at most two retries, 60 s and
+  300 s later, each a fresh run ID (`ingestion.run_id` moves to the newest). A human decision, an
+  applied repair, an exhausted correction allowance, or a configuration error (bad key, missing model)
+  is final. "A restart never replays uncertain work" still holds: a run left `started` by a crash is
+  never touched.
+- `AGENT_DAILY_MODEL_CALL_BUDGET` (default 40, UTC day, table `model_budget`) is charged with every
+  provider request of every run the server finishes — manual or watcher, successful or rate-limited —
+  before the run becomes observable as finished. When fewer than `MAX_MODEL_CALLS` remain, the watcher
+  reports `budget_exhausted` and starts nothing. CLI runs are outside the server and not counted.
+- `GET /api/watcher` (read:incidents) exposes running state, budget, retry policy and the last tick.
+
+**Tiers (`agent/model_client.py`).** `LLM_MODEL` is the heavy tier; `LLM_FAST_MODEL` (optional) the
+fast tier; `LLM_FALLBACK_MODELS` a comma-separated tail appended to both (`fast, heavy, fallbacks…`
+and `heavy, fallbacks…`). The workflow passes hints with every call — `stage`, `fast_path` (the
+procedural graph's validated fast path exists for this error type), `correction` (this is the retry
+after malformed output). The fast tier serves exactly `stage = diagnose ∧ fast_path ∧ ¬correction`;
+critique, novel error types and corrections always use the heavy tier. That keeps the adversarial
+step on the strongest configured model, and — since the graph guard (§10) blocks pruned repairs in
+Python and a human still approves — the safety story never depended on which model diagnosed.
+
+**Contract clarification (§2, model callable).** "At most one provider request per call" becomes
+"one reasoning request per call": the client may retry a request that produced *no answer*
+(`RateLimitError`, `ServiceUnavailableError`, `InternalServerError`, `APIConnectionError`,
+`Timeout`, `NotFoundError`, empty reply) against the next model in the tier, at most three providers
+per call, every attempt listed in `model_requests` with `tier`, `stage` and `status`
+(`returned | fallback | error`). Malformed content is never a fallback trigger — that remains the
+workflow's single correction and `MAX_MODEL_CALLS = 3` still bounds reasoning. `AuthenticationError`
+surfaces immediately. Test fakes that take `(*, system, prompt)` must accept `**hints`.
+
+**`approval_expired` (§3).** An approval nobody answers is not a rejection. Both adapters
+(`agent/server.py`, `memory_approval/approval_server.py`) add `expired: true` to the decision when the
+timeout fires — the key is absent on a real decision, so Dev C's return shape is unchanged — and the
+workflow ends the run as `needs_human` with `terminal_event = approval_expired`. The procedural graph
+learns nothing from it; without this, two unattended timeouts would have pruned a validated repair.
+
+**Deliberately not done.** No Slack: the approval callable is already the extension point (a Slack
+Block Kit card is another `request_approval` implementation plus a route for the button payload), but
+there is no workspace, token or public URL to point it at, and the browser/CopilotKit decision path
+already feeds `human_note` into the graph. No paid escalation tier. No change to the seven required
+tool calls, the two reasoning calls or any §2 signature. No frontend change; the ingestion monitor
+already shows a watcher-started run as *Open investigation*.
+
+**Verify.** `python -m agent check` prints `model_tiers`; `python -m agent check --model` makes one
+request on the heavy tier; `python -m agent serve --local-no-auth --watch`, then
+`POST /api/ingestion` with a string `amount`, then `GET /api/watcher` and `GET /api/ingestion` — the
+batch has a `run_id` without a click.

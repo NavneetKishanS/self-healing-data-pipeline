@@ -271,6 +271,33 @@ class WorkflowTests(unittest.TestCase):
         f.tools["request_approval"] = tamper
         self.assertEqual(f.run()["terminal_event"], "approval_tampered")
 
+    def test_expired_approval_is_needs_human_but_not_a_rejection(self):
+        f = Fixture()
+        f.procedures = FakeProcedures()
+        f.tools["request_approval"] = lambda **kwargs: {"approved": False, "human_note": "Approval expired", "expired": True}
+        result = f.run()
+        self.assertEqual((result["outcome"], result["terminal_event"]), ("needs_human", "approval_expired"))
+        self.assertEqual(result["mutation_state"], "not_attempted")
+        self.assertNotIn("apply_fix", f.calls)
+        self.assertEqual(f.procedures.refined[0]["terminal_event"], "approval_expired")
+        for expired in ("yes", 1, None):
+            with self.subTest(expired=expired):
+                f = Fixture()
+                f.tools["request_approval"] = lambda **kwargs: {"approved": False, "expired": expired}
+                self.assertEqual(f.run()["terminal_event"], "rejected")
+
+    def test_model_receives_routing_hints(self):
+        f = Fixture()
+        f.procedures = FakeProcedures(fast_path={"fix_type": "schema_patch", "successes": 1})
+        f.run()
+        self.assertEqual([(p["stage"], p["fast_path"], p["correction"]) for p in f.prompts],
+                         [("diagnose", True, False), ("critique", True, False)])
+        f = Fixture()
+        f.answers = ["bad", json.dumps(DIAGNOSIS), json.dumps(CRITIQUE)]
+        self.assertEqual(f.run()["outcome"], "fixed")
+        self.assertEqual([(p["stage"], p["fast_path"], p["correction"]) for p in f.prompts],
+                         [("diagnose", False, False), ("diagnose", False, True), ("critique", False, False)])
+
     def test_procedures_shape_both_prompts_and_learn_after_the_outcome(self):
         f = Fixture()
         f.procedures = FakeProcedures(fast_path={"fix_type": "schema_patch", "successes": 3})

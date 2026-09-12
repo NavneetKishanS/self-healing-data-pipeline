@@ -156,7 +156,8 @@ def test_verified_failure_counts_as_negative_evidence_but_tool_refusal_does_not(
 
 
 @pytest.mark.parametrize("event", ["critique_disagreed", "approval_tampered", "proposal_pruned", "budget_exhausted",
-                                   "model_invalid", "model_error", "job_not_failed", "stage_error", None, 7])
+                                   "model_invalid", "model_error", "job_not_failed", "stage_error", "approval_expired",
+                                   None, 7])
 def test_non_learning_outcomes_leave_the_file_untouched(event):
     g = graph()
     before = g.load()
