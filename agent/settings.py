@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ENV_FILE = Path(__file__).resolve().parent / ".env"
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_MODEL = "openrouter/anthropic/claude-sonnet-4.6"
 PROVIDER_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",

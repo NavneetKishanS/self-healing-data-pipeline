@@ -11,7 +11,7 @@ class LiveModel:
     def __init__(self, completion=None):
         self.model = os.getenv("LLM_MODEL", DEFAULT_MODEL)
         if self.model == "openrouter/free":
-            raise ValueError("Set LLM_MODEL=openrouter/openrouter/free in agent/.env; LiteLLM needs its provider prefix before OpenRouter's openrouter/free model ID")
+            raise ValueError("Set LLM_MODEL=openrouter/openrouter/free in the repo-root .env; LiteLLM needs its provider prefix before OpenRouter's openrouter/free model ID")
         provider = self.model.split("/", 1)[0]
         key_name = PROVIDER_KEYS.get(provider)
         if not key_name:
@@ -58,7 +58,7 @@ class LiveModel:
                 ) from None
             if type(exc).__name__ == "NotFoundError":
                 raise ModelRequestError(
-                    "Model endpoint not found (NotFoundError). Check LLM_MODEL in agent/.env; "
+                    "Model endpoint not found (NotFoundError). Check LLM_MODEL in the repo-root .env; "
                     "OpenRouter models require openrouter/<full-model-id>, including "
                     "openrouter/openrouter/free for the free router"
                 ) from None
