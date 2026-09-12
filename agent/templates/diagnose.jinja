@@ -1,6 +1,8 @@
 Assess this incident and propose one repair supported by the evidence.
 Evidence: {{ evidence | tojson }}
-Return exactly these keys:
-{"diagnosis": "observations, likely cause, and uncertainty", "proposed_fix": {"fix_type": "schema_patch or config_change or retry_policy", "target": "affected table or evidenced config", "change": {"supported key": "supported value"}}, "confidence": 0.0}
+Return exactly these keys, and nothing else — no markdown fences, no prose before or after:
+{"diagnosis": "observations, likely cause, and uncertainty", "proposed_fix": {"fix_type": "schema_patch or config_change or retry_policy", "target": "affected table or evidenced config", "change": {}}, "confidence": 0.0}
+For fix_type "schema_patch", change MUST be exactly {"column": "<column name>", "new_type": "<target type>"}.
+For "config_change" or "retry_policy", change may use other supported keys for that fix_type.
 Confidence must be between 0 and 1. Do not propose changes outside the observed incident.
 If evidence is insufficient, say so explicitly in diagnosis; do not invent a repair.
