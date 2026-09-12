@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { HttpAgent } from "@ag-ui/client";
 import { Auth0Provider, useAuth0 } from "@auth0/auth0-react";
 import { CopilotKit, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import "./style.css";
+import Investigation from "./Investigation.jsx";
 
 const authConfig = {
   domain: import.meta.env.VITE_AUTH0_DOMAIN,
@@ -59,10 +60,13 @@ function Review({ identityControls = null }) {
   </main>;
 }
 
-function ApprovalSurface({ agent, identityControls }) {
-  return <CopilotKit agents__unsafe_dev_only={{ approval: agent }}>
-    <Review identityControls={identityControls} />
-  </CopilotKit>;
+function ApprovalSurface({ agent, identityControls, request = fetch }) {
+  const [view, setView] = useState("investigation");
+  return <><nav className="view-nav" aria-label="Workspace">
+    <button className="quiet" aria-pressed={view === "investigation"} onClick={() => setView("investigation")}>Dataset investigation</button>
+    <button className="quiet" aria-pressed={view === "approvals"} onClick={() => setView("approvals")}>Approval inbox</button>
+  </nav>{view === "investigation" ? <Investigation request={request} identityControls={identityControls} /> :
+    <CopilotKit agents__unsafe_dev_only={{ approval: agent }}><Review identityControls={identityControls} /></CopilotKit>}</>;
 }
 
 function LocalApp() {
@@ -86,6 +90,15 @@ function AuthenticatedApp() {
     },
   }), [getAccessTokenSilently]);
 
+  const agentRequest = useCallback(async (url, init = {}) => {
+    const token = await getAccessTokenSilently({ authorizationParams: {
+      audience: authConfig.audience, scope: "read:incidents run:incidents approve:fixes",
+    }});
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+  }, [getAccessTokenSilently]);
+
   if (isLoading) return <main><article className="auth-card"><h1>Checking access…</h1></article></main>;
   if (!isAuthenticated) return <main><article className="auth-card">
     <span className="eyebrow">PROTECTED REVIEW</span>
@@ -98,7 +111,7 @@ function AuthenticatedApp() {
     <span>Signed in as {user?.email || user?.name || "reviewer"}</span>
     <button className="quiet" onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}>Sign out</button>
   </div>;
-  return <ApprovalSurface agent={agent} identityControls={identityControls} />;
+  return <ApprovalSurface agent={agent} identityControls={identityControls} request={agentRequest} />;
 }
 
 function Root() {
@@ -109,7 +122,7 @@ function Root() {
   if (!authEnabled) return <LocalApp />;
   return <Auth0Provider domain={authConfig.domain} clientId={authConfig.clientId}
     authorizationParams={{ redirect_uri: window.location.origin, audience: authConfig.audience,
-      scope: "openid profile email read:incidents approve:fixes" }}>
+      scope: "openid profile email read:incidents run:incidents approve:fixes" }}>
     <AuthenticatedApp />
   </Auth0Provider>;
 }
