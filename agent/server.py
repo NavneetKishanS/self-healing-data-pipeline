@@ -6,11 +6,13 @@ from pathlib import Path
 from queue import Empty, Queue
 import re
 import sqlite3
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, Condition
 from time import monotonic
 
 from ag_ui.core import EventType, RunAgentInput, RunStartedEvent, RunFinishedEvent, StateSnapshotEvent
 from ag_ui.encoder import EventEncoder
+from flask_sock import Sock
+import secrets
 from flask import Flask, Response, jsonify, request, stream_with_context
 
 from .auth import Auth0Verifier, Unauthorized, Forbidden
@@ -18,6 +20,8 @@ from .live import run_live
 from .dataset import OrdersDataset
 from .iris import IrisDataset, seed_iris, MEASUREMENTS
 import random
+import math
+from .transmitter import Transmitter
 from uuid import uuid4
 from datetime import datetime, timezone
 from .settings import integration_status, positive_number
@@ -37,6 +41,13 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
         seed_iris(db)
     runs, lock = {}, Lock()
     ingestion_lock = Lock()
+    updates = Condition()
+    revisions = {}
+    tickets = {}
+    def changed(owner):
+        with updates:
+            revisions[owner] = revisions.get(owner, 0) + 1
+            updates.notify_all()
 
     def identity(permission):
         if local_no_auth:
@@ -177,6 +188,7 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                 return jsonify(error="Local ingestion storage limit reached (1000 batches)"), 429
             db.execute("INSERT INTO ingestion VALUES (?, ?, ?, ?, ?, NULL)",
                        (batch_id, owner, payload, json.dumps(result), result["created_at"]))
+        changed(owner)
         return jsonify(result), 201
 
     @app.post("/api/ingestion/replay")
@@ -185,22 +197,100 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
         data = request.get_json()
         if not isinstance(data, dict) or type(data.get("corrupt")) is not bool:
             raise ValueError("corrupt must be a boolean")
+        return emit_sample(owner, data["corrupt"])
+
+    def emit_sample(owner, corrupt):
         with sqlite3.connect(database) as db:
             original = json.loads(db.execute("SELECT row_json FROM iris_source ORDER BY RANDOM() LIMIT 1").fetchone()[0])
         incoming = deepcopy(original)
-        column = random.choice(MEASUREMENTS) if data["corrupt"] else None
+        column = random.choice(tuple(original)) if corrupt else None
         if column:
-            incoming[column] = str(incoming[column])
+            incoming[column] = 123 if isinstance(incoming[column], str) else str(incoming[column])
         return ingest_data(owner, {"batchId": str(uuid4()), "rows": [incoming], "dataset": "iris"},
                            replay={"source": "Kaggle uciml/iris", "original": original, "changed_column": column})
 
+    def transmit(owner, probability):
+        # Producer and receiver share the same ingestion boundary; no browser timer.
+        with app.app_context():
+            response = app.make_response(emit_sample(owner, random.random() < probability))
+            if response.status_code >= 400:
+                raise ValueError(response.get_json().get("error", "Ingestion rejected sample"))
+
+    transmitter = Transmitter(transmit, changed)
+    app.extensions["transmitter"] = transmitter
+
+    @app.get("/api/transmitter")
+    def transmitter_status():
+        return transmitter.status(identity("read:incidents"))
+
+    @app.post("/api/transmitter/start")
+    def transmitter_start():
+        owner = identity("run:incidents")
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            raise ValueError("Expected configuration object")
+        interval = data.get("interval_seconds", 2)
+        probability = data.get("corruption_probability", 0.3)
+        if (type(interval) not in (int, float) or not math.isfinite(interval) or not 0.2 <= interval <= 60
+                or type(probability) not in (int, float) or not math.isfinite(probability) or not 0 <= probability <= 1):
+            raise ValueError("interval_seconds must be 0.2–60; corruption_probability must be 0–1")
+        transmitter.start(owner, interval, probability)
+        return transmitter.status(owner)
+
+    @app.post("/api/transmitter/stop")
+    def transmitter_stop():
+        owner = identity("run:incidents")
+        transmitter.stop(owner)
+        return transmitter.status(owner)
+
     @app.get("/api/ingestion")
     def ingestion_status():
-        owner = identity("read:incidents")
+        return stream_snapshot(identity("read:incidents"))
+
+    def stream_snapshot(owner):
         with sqlite3.connect(database) as db:
             records = db.execute("SELECT result,run_id FROM ingestion WHERE owner=? ORDER BY created DESC LIMIT 30", (owner,)).fetchall()
             total = db.execute("SELECT COUNT(*) FROM ingestion WHERE owner=?", (owner,)).fetchone()[0]
-        return {"batches": [{**json.loads(row[0]), "run_id": row[1]} for row in records], "total_batches": total}
+        return {"batches": [{**json.loads(row[0]), "run_id": row[1]} for row in records], "total_batches": total, "transmitter": transmitter.status(owner)}
+
+    @app.post("/api/transmitter/ticket")
+    def stream_ticket():
+        owner = identity("read:incidents")
+        token = secrets.token_urlsafe(32)
+        with updates:
+            now = monotonic()
+            for key in list(tickets):
+                if tickets[key][1] < now:
+                    del tickets[key]
+            if len(tickets) >= 1000:
+                return jsonify(error="Too many pending stream connections"), 429
+            tickets[token] = (owner, now + 30)
+        return {"ticket": token}
+
+    app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 25, "max_message_size": 4096}
+    sock = Sock(app)
+
+    @sock.route("/api/transmitter/stream")
+    def transmitter_stream(ws):
+        # Single-use ticket comes in the first frame, never a URL or access log.
+        try:
+            token = ws.receive(timeout=5)
+            with updates:
+                ticket = tickets.pop(token, None) if isinstance(token, str) else None
+            if not ticket or ticket[1] < monotonic():
+                ws.close(reason="Invalid or expired stream ticket")
+                return
+            owner = ticket[0]
+            expires = monotonic() + 300  # Reauthenticate periodically through ticket issuance.
+            revision = -1
+            while monotonic() < expires:
+                with updates:
+                    updates.wait_for(lambda: revisions.get(owner, 0) != revision, timeout=10)
+                    revision = revisions.get(owner, 0)
+                ws.send(json.dumps(stream_snapshot(owner)))
+            ws.close(reason="Refresh stream authentication")
+        except Exception:
+            ws.close()
 
     @app.post("/api/ingestion/<batch_id>/investigate")
     def investigate_batch(batch_id):

@@ -17,10 +17,12 @@ class IrisTests(unittest.TestCase):
                 incoming = data['flagged_samples'][0]['data']
                 changed = [k for k in original if original[k] != incoming[k]]
                 self.assertEqual(changed, [data['replay']['changed_column']])
-                self.assertIsInstance(incoming[changed[0]], str)
+                self.assertNotEqual(type(incoming[changed[0]]), type(original[changed[0]]))
+                if changed[0] == "Species":
+                    continue
                 model = IrisDataset([incoming])
                 schema = deepcopy(model.columns)
-                fix = {'fix_type': 'schema_patch', 'target': 'iris', 'change': {'column': changed[0], 'new_type': 'float'}}
+                fix = {'fix_type': 'schema_patch', 'target': 'iris', 'change': {'column': changed[0], 'new_type': 'integer' if changed[0] == 'Id' else 'float'}}
                 self.assertTrue(model.apply_fix(fix)['applied'])
                 self.assertEqual(model.rows, [original])
                 self.assertEqual(model.columns, schema)

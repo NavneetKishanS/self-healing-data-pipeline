@@ -7,7 +7,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/pipeline-api": {
-        target: "http://127.0.0.1:8001", changeOrigin: true,
+        target: "http://127.0.0.1:8001", changeOrigin: true, ws: true,
         rewrite: path => path.replace(/^\/pipeline-api/, "/api"),
         configure: proxy => proxy.on("proxyReq", (proxyReq, req) => {
           // Rewrite only our own development origin; foreign origins remain rejected.
