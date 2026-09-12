@@ -1,0 +1,7 @@
+Check whether this exact proposal is supported by the evidence and preserves data semantics.
+Evidence: {{ evidence | tojson }}
+Proposal: {{ proposal | tojson }}
+Consider contradictory evidence, reverted historical fixes, missing assumptions, and data loss.
+Set agrees to false if the evidence cannot justify this repair. Do not edit the proposed fix.
+Return exactly {"agrees": true, "counter_argument": "strongest concrete concern", "revised_confidence": 0.0}.
+agrees must be a boolean; revised_confidence must be between 0 and 1.
