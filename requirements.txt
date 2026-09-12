@@ -1,4 +1,12 @@
+# One file installs everything needed to run and test the repo: pip install -r requirements.txt
 anthropic>=0.40.0
 flask>=3.0.0
 python-dotenv>=1.0.0
 jinja2>=3.1,<4
+# Agent runtime: LiteLLM model client, Auth0 token verification, AG-UI endpoint
+litellm>=1.80,<2
+httpx>=0.27,<1
+PyJWT[crypto]>=2.10,<3
+ag-ui-protocol>=0.1,<1
+# Test runner for tests/ and agent/tests/
+pytest>=9.1,<10

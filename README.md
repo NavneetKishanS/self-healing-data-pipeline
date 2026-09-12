@@ -71,7 +71,7 @@ means nobody blocks on anybody for the first ~2 hours.
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt -r agent/requirements.txt
+pip install -r requirements.txt
 cp .env.example .env   # fill in your model API key
 python -m agent run --inject-failure schema_drift --approval console   # one full incident end to end
 ```
