@@ -6,7 +6,7 @@ synthetic_pipeline.py so the tool functions in tools_pipeline.py report it accur
 Keep these deterministic — no randomness. A demo failure must reproduce identically every time.
 """
 
-from pipeline.synthetic_pipeline import STATE, SCHEMA
+from pipeline.synthetic_pipeline import STATE, SCHEMA, ORDERS, restore_schema
 
 
 def inject_schema_drift(job_id: str = "job_1") -> None:
@@ -21,12 +21,20 @@ def inject_schema_drift(job_id: str = "job_1") -> None:
 
 
 def inject_null_spike(job_id: str = "job_1") -> None:
-    """customer_id starts arriving null above an acceptable threshold."""
+    """
+    customer_id starts arriving null above an acceptable threshold. Affected count is a
+    fixed fraction of the real fixture (pipeline/fixtures/orders.csv), not a hardcoded
+    number, so it stays consistent if the fixture size ever changes.
+    """
+    total = len(ORDERS)
+    affected = round(total * 0.42)
+    valid_rows = total - affected
+    pct = round(affected / total * 100)
     STATE[job_id].update({
         "status": "failed",
         "error_type": "null_spike",
-        "error_message": "42% of rows have null customer_id, exceeds 5% threshold.",
-        "row_count": 580,
+        "error_message": f"{pct}% of rows have null customer_id, exceeds 5% threshold.",
+        "row_count": valid_rows,
     })
 
 
@@ -50,4 +58,8 @@ SCENARIOS = {
 def inject(name: str, job_id: str = "job_1") -> None:
     if name not in SCENARIOS:
         raise ValueError(f"Unknown failure scenario: {name}. Options: {list(SCENARIOS)}")
+    # Always start from a pristine schema so a prior, unresolved schema_drift can't bleed
+    # into whatever scenario is being injected now. inject_schema_drift re-drifts it right
+    # after if that's the one requested.
+    restore_schema()
     SCENARIOS[name](job_id)
