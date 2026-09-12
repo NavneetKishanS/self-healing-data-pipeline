@@ -1,111 +1,229 @@
-# Self-healing data pipeline (agentic)
+# Mend — a self-healing data pipeline agent
 
-One agent, a rich toolset, human-in-the-loop approval. Built for a 6-hour hackathon window, 3 developers.
+An agent that watches a data pipeline, detects schema drift as rows arrive, diagnoses the failure
+with a language model, argues against its own conclusion, and then **stops and waits for a human**
+to approve the exact change before anything is modified.
 
-## The architecture decision (say this to judges)
+The interesting part is not that a model can propose a fix. It is that the loop is **bounded by
+construction**: Python decides which tool runs next, the model never drives execution, every run
+ends in one of three terminal states, and a repair a human rejected once is structurally blocked
+from being proposed again.
 
-We deliberately chose **one agent with many tools** over a multi-agent swarm. The failure-diagnosis,
-fix-proposal, and self-critique steps are related reasoning over the same evidence, not independent
-jobs — so they live in one context window and one loop, not three services passing messages. This
-follows the standard advice in the agent-architecture literature: reach for multiple agents only when
-a single one is doing too many *unrelated* jobs, or you need real parallelism/isolation. We don't.
+---
 
-## The loop
+## Quickstart
 
-```
-failure detected
-  -> get_recent_logs
-  -> get_schema (if relevant)
-  -> search_past_incidents   (JSON memory of prior failures + fixes)
-  -> [model reasons to a diagnosis + proposed fix]
-  -> critique_own_fix        (second reasoning pass, argues against the diagnosis)
-  -> request_approval        (pauses, human approves/rejects in browser)
-  -> apply_fix               (on approval)
-  -> rerun_pipeline
-  -> log_incident             (writes outcome back to memory, closes the loop)
-```
-
-Stop conditions: max 8 tool calls per incident. Must end in one of: `fixed`, `needs_human`, `gave_up`
-(with reasoning attached). Never loop silently.
-
-## The learning loop (procedural graph)
-
-Memory alone is episodic. A second store, the procedural graph (`memory_approval/procedural_graph.py`,
-seeded from `procedural_graph_seed.json`), turns outcomes into procedure: which fix types are admissible
-or pruned per error type, why, and what the rerun must prove. It is rendered into both model prompts,
-blocks a repair a human already rejected before any approval is requested, and rewrites itself offline
-after each incident — committing only if the new graph validates and the pipeline smoke test passes.
-No extra model call, no change to the tool sequence. Details and rules: CONTEXT.md §10.
+**Requirements:** Python 3.11+, Node 20+ (the frontend's build tooling requires it), and an
+[OpenRouter](https://openrouter.ai) API key. Free models work — see [Model configuration](#model-configuration).
 
 ```bash
-python -m memory_approval.procedural_graph show                      # admissible / pruned repairs + changelog
+git clone https://github.com/NavneetKishanS/self-healing-data-pipeline.git
+cd self-healing-data-pipeline
+
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # one file installs everything
+
+cp .env.example .env                     # then add your OPENROUTER_API_KEY
+python -m agent check --model            # verifies the key reaches a live model
+```
+
+### Try it without any API key
+
+```bash
+python -m agent.demo --decision approve
+```
+
+A narrated walkthrough of the real workflow against a three-row fixture with scripted model
+responses. No network calls, nothing saved. Add `--show-prompts` to inspect the exact prompts.
+
+### One incident, end to end, in the terminal
+
+```bash
+python -m agent run --inject-failure schema_drift --approval console
+```
+
+Injects a known failure, gathers evidence, runs diagnose and critique, then pauses for you to type
+`approve`. Use `--approval browser` for the standalone Flask page, or `--approval reject` for a
+non-interactive run that stops at the approval gate.
+
+### The full console
+
+Four processes. Each in its own terminal, from the repo root:
+
+```bash
+# 1. Agent backend — approvals, AG-UI stream
+python -m agent serve --local-no-auth
+
+# 2. Agent backend — ingestion monitor (same code, second port)
+AGENT_PORT=8001 python -m agent serve --local-no-auth
+
+# 3. CopilotKit runtime bridge
+cd agent/copilotkit && npm ci --ignore-scripts && npm start
+
+# 4. Frontend
+cd frontend && npm install && npm run dev
+```
+
+Then open **http://127.0.0.1:5173**.
+
+| Port | Process |
+|---|---|
+| 5173 | Frontend (Vite) |
+| 8000 | Agent backend — approvals, AG-UI |
+| 8001 | Agent backend — ingestion + transmitter |
+| 4000 | CopilotKit runtime bridge |
+| 5050 | Standalone Flask approval page (only for `--approval browser`) |
+
+> `--local-no-auth` is loopback-only development mode. Never deploy it. Running without the flag
+> requires Auth0 (see [Authentication](#authentication)).
+
+---
+
+## How it works
+
+### The incident sequence
+
+Eleven steps in a fixed order, enforced by Python. The model reasons; it does not choose what runs
+next.
+
+| # | Step | Kind |
+|---|---|---|
+| 1 | Ingestion validation — every batch type-checked on arrival | no model |
+| 2 | `get_recent_logs` — job status, error type, row counts | tool |
+| 3 | `get_schema` — current column types + repair contract | tool |
+| 4 | `search_past_incidents` — what was tried before, what was reverted | tool |
+| 5 | **Diagnose** — structured diagnosis, one proposed fix, confidence | model |
+| 6 | **Critique own fix** — argues against step 5 on the same evidence | model |
+| 7 | Procedural guard — halts if this fix type was pruned for this error | policy |
+| 8 | `request_approval` — blocking, hash-bound | human |
+| 9 | `apply_fix` — converts values on an isolated copy | tool |
+| 10 | `rerun_pipeline` — re-validates row count *and* schema | tool |
+| 11 | `log_incident` — writes the outcome back to memory | tool |
+
+Detection (step 1) never waits on a model and costs no tokens. If the critique disagrees at step 6,
+the run stops at `needs_human` before anything is touched.
+
+### The guarantees
+
+- **Bounded:** max 8 tool calls, 3 model calls per incident, counted in Python.
+- **Three terminal states:** `fixed`, `needs_human`, `gave_up`. Nothing loops back.
+- **No silent retries:** a rejected fix is never retried automatically. Malformed model output gets
+  exactly one correction attempt, then stops.
+- **Approval integrity:** the approved fix is hashed. Any edit between approval and apply stops the
+  run and demands a fresh decision.
+- **Verified, not assumed:** a passing status flag is not accepted as proof — row count and schema
+  validity must both pass.
+
+### The learning loop
+
+Incident memory records *what happened*. A second store — the **procedural graph**
+(`memory_approval/procedural_graph.py`) — records *what to do about it*. A verified repair
+reinforces that fix type for that error type; a human rejection or a failed verification
+accumulates negative evidence until the fix type is pruned and structurally blocked at step 7.
+
+Pruning is **derived from the evidence counters, never asserted by the model**, and a rewritten
+graph is only committed if it validates *and* `python -m pipeline.smoke_test` still passes.
+
+```bash
+python -m memory_approval.procedural_graph show
 python -m memory_approval.procedural_graph explain --error-type schema_drift
 ```
 
-## Always-on mode (free models only)
-
-`python -m agent serve --watch` turns the one-shot CLI into an on-call agent. A watcher thread
-(`agent/watcher.py`) idles at zero model calls, wakes when an ingested batch is flagged, and starts the
-investigation the *Investigate flagged batch* button would have started — same claim, same run, same
-approval card in the UI. The model client routes between tiers of free OpenRouter models: a validated
-fast path in the procedural graph sends the diagnosis to `LLM_FAST_MODEL`; novel incidents and every
-critique use `LLM_MODEL`; rate limits and outages fall through `LLM_FALLBACK_MODELS` within the same
-call. Free OpenRouter models allow 50 requests a day, so the server keeps a daily model-call budget and
-retries only runs that never got a model answer. Setup in `.env.example`; rules in CONTEXT.md §11.
-
-## Repo layout
-
-```
-pipeline/           Dev A — synthetic pipeline + environment tools (read/write the world)
-agent/              Dev B — the agent loop, prompts, tool-calling, stop conditions. Run with
-                    `python -m agent run` / `python -m agent serve` — the integration point.
-memory_approval/    Dev C — incident memory (JSON) + human approval UI
-CONTEXT.md          Shared tool contracts. Read this before writing any tool. Do not change a
-                    signature without telling the other two devs.
-docs/               Per-dev detailed context (read your own file first)
-```
-
-## Branch strategy
-
-```
-main                — this boilerplate, protected, only integration merges land here
-dev-a/pipeline-tools
-dev-b/agent-loop
-dev-c/memory-approval
-```
-
-Each dev builds on their branch against the **stub** implementations already in the other two
-folders (see below — every tool has a working fake version that returns plausible fake data). This
-means nobody blocks on anybody for the first ~2 hours.
-
-## Setup
+### Always-on mode
 
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in your model API key
-python -m agent run --inject-failure schema_drift --approval console   # one full incident end to end
+python -m agent serve --local-no-auth --watch
 ```
 
-## Timeline (6 hours, 3 devs)
+A watcher thread (`agent/watcher.py`) idles at **zero model calls**, wakes when an ingested batch is
+flagged, and starts the same investigation the *Investigate* button would. One incident at a time.
+It retries only runs that ended before any model answered, and a daily model-call budget keeps it
+inside the free tier's cap. Status at `GET /api/watcher`.
 
-| Time | Dev A | Dev B | Dev C |
-|---|---|---|---|
-| 0:00–1:30 | Build real synthetic pipeline + failure injection | Write system prompt + loop against stub tools | Build JSON memory store + seed data, approval page skeleton |
-| 1:30–3:00 | Real `get_recent_logs`/`get_schema` online | Swap stubs for Dev A's real tools | Real `search_past_incidents` + `log_incident` |
-| 3:00–4:00 | Real `apply_fix`/`rerun_pipeline` online | Integrate Dev C's memory + approval tools, first full loop | Real approval page wired to loop's pause/resume |
-| 4:00–5:00 | All three: run all failure scenarios end to end, fix what breaks | | |
-| 5:00–6:00 | All three: polish demo narrative, rehearse, do not add features | | |
+---
 
-## Demo script (write this down now, follow it later)
+## Model configuration
 
-1. Show the pipeline running clean.
-2. Inject one failure live (`--inject-failure schema_drift`).
-3. Show the agent's tool calls streaming (logs -> schema -> memory search).
-4. Show the critique step explicitly arguing against the first-pass diagnosis.
-5. Show the approval page, click approve.
-6. Show the pipeline going green again.
-7. Show the memory file with the new incident appended — "next time this happens, it's faster."
+Free OpenRouter models are the default target. Three variables, all optional except the key:
 
-Rehearse this exact sequence twice before presenting. Pick the one failure scenario that's most
-reliable, not the most impressive-sounding one.
+| Variable | Role |
+|---|---|
+| `LLM_MODEL` | Heavy tier — novel incidents and **every** critique |
+| `LLM_FAST_MODEL` | Fast tier — a diagnose call that already has a validated fast path |
+| `LLM_FALLBACK_MODELS` | Tried in order when a request never produces an answer |
+
+Fallback happens **within a single call** on rate limits, outages, timeouts and empty replies —
+malformed content never falls through, so the 3-model-call bound still holds. Leaving the tier
+variables unset gives plain single-model behaviour.
+
+> **Free model IDs rotate weekly.** Check <https://openrouter.ai/models?q=free> and verify with
+> `python -m agent check --model`. Free accounts are capped at ~50 requests/day, which is what
+> `AGENT_DAILY_MODEL_CALL_BUDGET` exists to respect.
+
+Any OpenAI-compatible endpoint works via the `openai/` prefix — set `OPENAI_API_BASE`. Anthropic
+works directly via `anthropic/`. See `.env.example` for every variable.
+
+---
+
+## Project layout
+
+```
+agent/               The agent: fixed-sequence workflow, model client, watcher,
+                     AG-UI + REST server, Exa/Slack/Ambiguous adapters
+  workflow.py        The 11-step sequence and all the bounds
+  model_client.py    Tiered model routing with in-call fallback
+  watcher.py         Always-on mode
+  server.py          REST + AG-UI + ingestion endpoints
+  dataset.py/iris.py Tool adapters over the fixtures
+memory_approval/     Incident memory, human approval, procedural graph
+pipeline/            Synthetic pipeline, failure injection, smoke test
+frontend/            React console — ingestion monitor, approvals, how-it-works
+pipeline-slack-bot/  Optional Slack approvals (Socket Mode)
+CONTEXT.md           Tool contracts and design decisions, with rationale
+docs/                Per-area detail
+```
+
+---
+
+## Testing
+
+```bash
+pytest -q                        # full suite
+python -m pipeline.smoke_test    # pipeline determinism + repair verification, no API key
+cd frontend && npm run build     # frontend production build
+cd agent/copilotkit && npm test  # runtime bridge
+```
+
+---
+
+## Authentication
+
+Local development uses `--local-no-auth` (loopback only). For a real deployment, configure
+`AUTH0_DOMAIN` and `AUTH0_AUDIENCE`, run `python -m agent serve` without the flag, and grant the
+`read:incidents`, `run:incidents` and `approve:fixes` permissions. The frontend needs the matching
+`VITE_AUTH0_*` values. Access tokens are verified against the tenant JWKS — signature, issuer,
+audience and expiry.
+
+---
+
+## What is real, and what is simulated
+
+Stated plainly, so nothing here is mistaken for production readiness.
+
+| | |
+|---|---|
+| **Model reasoning** | **Real.** Live provider calls. No scripted fallback is ever substituted for a live run. |
+| **Drift detection** | **Real.** Values type-checked against the expected schema on arrival, in the backend. |
+| **Repair** | **Real, but isolated.** Values are genuinely converted on a copy and re-validated. The original flagged record is preserved. |
+| **Human approval** | **Real.** Blocking, hash-bound, expires if unanswered. |
+| **The pipeline itself** | **Simulated.** A local fixture batch stands in for a warehouse. No production broker or sink is connected, so a passing rerun is not independent proof of a production repair. |
+
+Known limits: single-process locking (not distributed), no rollback tool, and a restarted server
+does not resume pending investigations. `CONTEXT.md` §6 tracks these explicitly.
+
+---
+
+## License
+
+See `pipeline-slack-bot/LICENSE`. Dataset: Kaggle `uciml/iris` (CC0) — provenance in
+`agent/fixtures/README.md`.
