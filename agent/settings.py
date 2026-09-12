@@ -5,11 +5,17 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+DEFAULT_MODEL = "openrouter/anthropic/claude-sonnet-4.6"
+PROVIDER_KEYS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
 
 
 def load_settings():
-    load_dotenv(ROOT / ".env", override=False)
+    load_dotenv(ENV_FILE, override=False)
 
 
 def configured(name):
@@ -27,11 +33,12 @@ def positive_number(name, default, integer=False):
 
 
 def integration_status():
-    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-6")
-    credential = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(model.split("/", 1)[0])
+    model = os.getenv("LLM_MODEL", DEFAULT_MODEL)
+    credential = PROVIDER_KEYS.get(model.split("/", 1)[0])
     return {
         "model": model,
-        "model_key": "configured, not verified" if credential and configured(credential) else "missing or unsupported provider",
+        "model_key": ("configured, not verified" if configured(credential) else f"missing {credential}")
+        if credential else "unsupported provider",
         "exa": "configured, not verified" if configured("EXA_API_KEY") else "missing EXA_API_KEY",
         "ambiguous": "configured, not verified" if configured("AMBIGUOUS_API_KEY") else "missing AMBIGUOUS_API_KEY",
         "auth0": "configured, not verified" if configured("AUTH0_DOMAIN") and configured("AUTH0_AUDIENCE") else "missing AUTH0_DOMAIN / AUTH0_AUDIENCE",

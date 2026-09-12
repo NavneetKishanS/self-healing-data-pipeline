@@ -8,6 +8,7 @@ from typing import Callable, Mapping
 from uuid import uuid4
 
 from . import prompts
+from .errors import ModelRequestError
 from .validation import fingerprint, parse_response
 
 MAX_TOOL_CALLS = 8
@@ -198,6 +199,9 @@ def run_incident(
         result["reason"] = "Rerun succeeded with the expected row count"
     except _Stop as stop:
         result["outcome"], result["reason"] = stop.outcome, stop.reason
+    except ModelRequestError as exc:
+        result["outcome"] = "gave_up"
+        result["reason"] = f"{stage}: {exc}; no automatic retry"
     except Exception as exc:
         result["outcome"] = "needs_human" if stage in ("approval", "apply", "verification", "memory") else "gave_up"
         result["reason"] = f"{stage} failed ({type(exc).__name__}); no automatic retry"
