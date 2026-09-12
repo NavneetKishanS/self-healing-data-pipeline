@@ -13,78 +13,100 @@ const authConfig = {
 const configuredAuthValues = Object.values(authConfig).filter(Boolean).length;
 const authEnabled = configuredAuthValues === 3;
 
-function Review({ identityControls = null }) {
+function Review({ identityControls = null, apiFetch }) {
   const { agent } = useAgent({ agentId: "approval" });
   const { copilotkit } = useCopilotKit();
-  const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState("");
-  const [notes, setNotes] = useState({});
+  const [note, setNote] = useState("");
 
-  async function run(decision) {
-    if (busy) return;
-    setBusy(true); setError("");
+  async function start() {
+    if (starting) return;
+    setStarting(true); setError("");
     try {
-      await copilotkit.runAgent({ agent, forwardedProps: decision ? { decision } : {} });
-      setLoaded(true);
+      // forwardedProps reach agent/server.py's POST /agent -> start(job_id, inject_failure).
+      // job_1 + schema_drift is the only scenario the live adapter supports (see CONTEXT.md).
+      await copilotkit.runAgent({ agent, forwardedProps: { job_id: "job_1", inject_failure: "schema_drift" } });
+      setStarted(true);
     } catch (e) {
-      setError("The server could not accept this request. Refresh approvals; the proposal may have expired or already been decided.");
-    } finally { setBusy(false); }
+      setError("The server could not accept this request. It may already have an incident running.");
+    } finally { setStarting(false); }
   }
-  function decide(record, decision) {
-    const { approval_id, incident_id, fix_hash, decision_token } = record;
-    return run({ approval_id, incident_id, fix_hash, decision_token, decision, note: notes[approval_id] || "" });
+
+  // Decisions go straight to the REST endpoint (agent/server.py POST /api/runs/<id>/decision),
+  // not through copilotkit.runAgent - that call only ever starts/observes a run, it never reads
+  // a "decision" forwardedProp. The SSE stream from start() above stays open and will push the
+  // finished state once this resolves the backend's pending approval wait.
+  async function decide(approved) {
+    if (deciding || !pending) return;
+    setDeciding(true); setError("");
+    try {
+      const response = await apiFetch(`/api/runs/${agent.state.incident_id}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved, human_note: note, fix_hash: pending.fix_hash }),
+      });
+      if (!response.ok) throw new Error("rejected");
+    } catch (e) {
+      setError("The decision could not be recorded. The proposal may have expired or already been decided.");
+    } finally { setDeciding(false); }
   }
-  const records = agent.state?.approvals || [];
+
+  const status = agent.state?.status;
+  const pending = status === "awaiting_approval" ? agent.state?.approval : null;
+  const result = agent.state?.result;
+
   return <main>
     <header>{identityControls}<span className="eyebrow">PIPELINE INCIDENT REVIEW</span><h1>Review a proposed repair</h1>
       <p>Inspect the diagnosis and exact change before allowing the pipeline to continue.</p>
-      <button disabled={busy} onClick={() => run()}>{busy ? "Contacting backend…" : "Load pending approvals"}</button>
+      {!started && <button disabled={starting} onClick={start}>{starting ? "Starting investigation…" : "Start investigation (schema_drift)"}</button>}
     </header>
     {error && <p role="alert" className="error">{error}</p>}
-    {agent.state?.result?.recorded && <p role="status" className="success">Your {agent.state.result.decision === "approve" ? "approval" : "rejection"} was recorded. The pipeline worker receives this decision separately.</p>}
-    {loaded && records.length === 0 && <article><h2>No pending approvals</h2><p>Start an investigation or the local approval demo, then load approvals again.</p></article>}
-    {records.map(record => <article key={record.approval_id}>
-      <span className="eyebrow">AWAITING YOUR DECISION</span><h2>{record.diagnosis}</h2>
-      <p>Model confidence: {Math.round(record.confidence * 100)}% <span className="muted">(model estimate)</span></p>
-      <h3>Proposed change</h3><pre>{JSON.stringify(record.proposed_fix, null, 2)}</pre>
-      <label htmlFor={`note-${record.approval_id}`}>Decision note (optional)</label>
-      <textarea id={`note-${record.approval_id}`} maxLength={2000} value={notes[record.approval_id] || ""}
-        onChange={e => setNotes({ ...notes, [record.approval_id]: e.target.value })} />
-      <div className="actions"><button disabled={busy} onClick={() => decide(record, "approve")}>Approve repair</button>
-        <button className="reject" disabled={busy} onClick={() => decide(record, "reject")}>Reject repair</button></div>
-      <small>Incident: {record.incident_id}<br/>Expires: {new Date(record.expires_at * 1000).toLocaleTimeString()}</small>
-    </article>)}
+    {started && !pending && !result && <article><h2>Investigating…</h2><p>Gathering evidence and reasoning about the failure. This can take up to a minute on some models.</p></article>}
+    {pending && <article>
+      <span className="eyebrow">AWAITING YOUR DECISION</span><h2>{pending.diagnosis}</h2>
+      <p>Model confidence: {Math.round(pending.confidence * 100)}% <span className="muted">(model estimate)</span></p>
+      <h3>Proposed change</h3><pre>{JSON.stringify(pending.proposed_fix, null, 2)}</pre>
+      <label htmlFor="note">Decision note (optional)</label>
+      <textarea id="note" maxLength={2000} value={note} onChange={e => setNote(e.target.value)} />
+      <div className="actions"><button disabled={deciding} onClick={() => decide(true)}>Approve repair</button>
+        <button className="reject" disabled={deciding} onClick={() => decide(false)}>Reject repair</button></div>
+      <small>Incident: {pending.incident_id}</small>
+    </article>}
+    {result && <article>
+      <span className="eyebrow">OUTCOME</span><h2>{result.outcome}</h2>
+      <p>{result.reason}</p>
+      {result.verification && <><h3>Rerun result</h3><pre>{JSON.stringify(result.verification, null, 2)}</pre></>}
+    </article>}
     <footer>Local approval interface · CopilotKit / AG-UI · No repair runs in the browser</footer>
   </main>;
 }
 
-function ApprovalSurface({ agent, identityControls }) {
+function ApprovalSurface({ agent, identityControls, apiFetch }) {
   return <CopilotKit agents__unsafe_dev_only={{ approval: agent }}>
-    <Review identityControls={identityControls} />
+    <Review identityControls={identityControls} apiFetch={apiFetch} />
   </CopilotKit>;
 }
 
 function LocalApp() {
   const agent = useMemo(() => new HttpAgent({ url: "/ag-ui", agentId: "approval" }), []);
-  return <ApprovalSurface agent={agent} />;
+  return <ApprovalSurface agent={agent} apiFetch={fetch} />;
 }
 
 function AuthenticatedApp() {
   const { isLoading, isAuthenticated, user, loginWithRedirect, logout, getAccessTokenSilently } = useAuth0();
-  const agent = useMemo(() => new HttpAgent({
-    url: "/ag-ui",
-    agentId: "approval",
-    fetch: async (url, init) => {
-      const token = await getAccessTokenSilently({ authorizationParams: {
-        audience: authConfig.audience,
-        scope: "read:incidents approve:fixes",
-      }});
-      const headers = new Headers(init.headers);
-      headers.set("Authorization", `Bearer ${token}`);
-      return fetch(url, { ...init, headers });
-    },
-  }), [getAccessTokenSilently]);
+  const authorizedFetch = useMemo(() => async (url, init = {}) => {
+    const token = await getAccessTokenSilently({ authorizationParams: {
+      audience: authConfig.audience,
+      scope: "read:incidents approve:fixes",
+    }});
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+  }, [getAccessTokenSilently]);
+  const agent = useMemo(() => new HttpAgent({ url: "/ag-ui", agentId: "approval", fetch: authorizedFetch }), [authorizedFetch]);
 
   if (isLoading) return <main><article className="auth-card"><h1>Checking access…</h1></article></main>;
   if (!isAuthenticated) return <main><article className="auth-card">
@@ -98,7 +120,7 @@ function AuthenticatedApp() {
     <span>Signed in as {user?.email || user?.name || "reviewer"}</span>
     <button className="quiet" onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}>Sign out</button>
   </div>;
-  return <ApprovalSurface agent={agent} identityControls={identityControls} />;
+  return <ApprovalSurface agent={agent} identityControls={identityControls} apiFetch={authorizedFetch} />;
 }
 
 function Root() {

@@ -11,6 +11,7 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 runtime/
+agent/.state/
 node_modules/
 dist/
 graphify-out/

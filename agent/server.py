@@ -8,6 +8,7 @@ import re
 import sqlite3
 from threading import Event, Lock, Thread
 from time import monotonic
+from urllib.parse import urlsplit
 
 from ag_ui.core import EventType, RunAgentInput, RunStartedEvent, RunFinishedEvent, StateSnapshotEvent
 from ag_ui.encoder import EventEncoder
@@ -32,10 +33,16 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
 
     def identity(permission):
         if local_no_auth:
-            # The CLI binds to loopback. Reject browser cross-origin requests in local mode.
+            # The CLI binds to loopback. Reject browser cross-origin requests in local mode,
+            # but allow any loopback origin/port - a dev-server frontend (e.g. Vite on 5173)
+            # proxying to this backend (e.g. 8000) is same-machine, not cross-origin in the
+            # sense this check exists to block. Exact host_url equality would reject every
+            # normal separate-port local dev setup, not just real cross-origin requests.
             origin = request.headers.get("Origin")
-            if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
-                raise Forbidden("Local mode only accepts same-origin browser requests")
+            if origin:
+                parsed = urlsplit(origin)
+                if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+                    raise Forbidden("Local mode only accepts same-origin or loopback browser requests")
             if request.remote_addr not in ("127.0.0.1", "::1", None):
                 raise Forbidden("Local mode requires loopback")
             return "local-demo"
