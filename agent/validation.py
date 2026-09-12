@@ -21,10 +21,21 @@ def _text(value):
         raise ValueError("Expected nonempty text")
 
 
+def _strip_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    # Drop the opening fence (optionally tagged, e.g. ```json) and a trailing ``` if present.
+    body = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+    if body.rstrip().endswith("```"):
+        body = body.rstrip()[: -len("```")]
+    return body.strip()
+
+
 def parse_response(stage: str, text: str) -> dict:
     if not isinstance(text, str):
         raise ValueError("Model caller must return JSON text")
-    data = json.loads(text)
+    data = json.loads(_strip_code_fence(text))
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
     if stage == "diagnose":

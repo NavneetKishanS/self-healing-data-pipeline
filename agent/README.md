@@ -59,6 +59,7 @@ result = run_incident(
         "log_incident": log_incident,
     },
     model=call_model,
+    procedures=ProceduralGraph(),  # optional: memory_approval.procedural_graph, see CONTEXT.md §10
 )
 ```
 
@@ -92,8 +93,12 @@ after an uncertain write. No model receives permission to execute tools itself.
 ## Results and verification
 
 Results are JSON-serializable dictionaries containing `incident_id`, `job_id`, `outcome`, `reason`,
-`tool_calls`, `model_calls`, `diagnosis`, `critique`, `approval`, `verification`, `memory_logged`,
-`mutation_state`, `sources`, `warnings`, `prompt_versions`, and an ordered `trace`.
+`tool_calls`, `model_calls`, `error_type`, `terminal_event`, `diagnosis`, `critique`, `approval`,
+`application`, `verification`, `memory_logged`, `mutation_state`, `sources`, `warnings`,
+`prompt_versions`, `procedures` (null unless a procedural graph was supplied), and an ordered `trace`.
+`terminal_event` is the structured reason the run ended (`verified`, `rejected`, `proposal_pruned`,
+`critique_disagreed`, `apply_failed`, `verification_failed`, …); the procedural graph learns from it
+rather than from `reason` strings.
 `diagnosis` contains the complete diagnosis/proposal/confidence object. `trace` contains stage names,
 statuses, and elapsed seconds, not raw evidence. Model-produced diagnosis and notes can still
 contain sensitive data: the UI/report integration must redact before exporting them.

@@ -28,9 +28,13 @@ your code should need to change if everyone respected the contract.
 ## What "done" looks like
 
 ```bash
-python main.py --inject-failure schema_drift
+python -m agent run --inject-failure schema_drift --approval console
 # streams: tool calls -> diagnosis -> critique -> approval request -> (waits) -> fix applied -> rerun -> logged
 ```
+
+Note: this file predates the rewrite to `agent/workflow.py`'s fixed-sequence orchestrator (see
+CONTEXT.md §0/§9) — `agent/agent_loop.py` no longer exists. The command above is current; the rest
+of this file describes the superseded ReAct-loop approach.
 
 ## Do not
 

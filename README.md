@@ -28,13 +28,27 @@ failure detected
 Stop conditions: max 8 tool calls per incident. Must end in one of: `fixed`, `needs_human`, `gave_up`
 (with reasoning attached). Never loop silently.
 
+## The learning loop (procedural graph)
+
+Memory alone is episodic. A second store, the procedural graph (`memory_approval/procedural_graph.py`,
+seeded from `procedural_graph_seed.json`), turns outcomes into procedure: which fix types are admissible
+or pruned per error type, why, and what the rerun must prove. It is rendered into both model prompts,
+blocks a repair a human already rejected before any approval is requested, and rewrites itself offline
+after each incident — committing only if the new graph validates and the pipeline smoke test passes.
+No extra model call, no change to the tool sequence. Details and rules: CONTEXT.md §10.
+
+```bash
+python -m memory_approval.procedural_graph show                      # admissible / pruned repairs + changelog
+python -m memory_approval.procedural_graph explain --error-type schema_drift
+```
+
 ## Repo layout
 
 ```
 pipeline/           Dev A — synthetic pipeline + environment tools (read/write the world)
-agent/              Dev B — the agent loop, prompts, tool-calling, stop conditions
+agent/              Dev B — the agent loop, prompts, tool-calling, stop conditions. Run with
+                    `python -m agent run` / `python -m agent serve` — the integration point.
 memory_approval/    Dev C — incident memory (JSON) + human approval UI
-main.py             Wires all three together — the integration point
 CONTEXT.md          Shared tool contracts. Read this before writing any tool. Do not change a
                     signature without telling the other two devs.
 docs/               Per-dev detailed context (read your own file first)
@@ -59,7 +73,7 @@ means nobody blocks on anybody for the first ~2 hours.
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in your model API key
-python main.py --inject-failure schema_drift   # runs one full incident end to end
+python -m agent run --inject-failure schema_drift --approval console   # one full incident end to end
 ```
 
 ## Timeline (6 hours, 3 devs)
