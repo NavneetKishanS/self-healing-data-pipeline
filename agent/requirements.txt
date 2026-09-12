@@ -1,11 +1,3 @@
 # Kept as an alias for existing setup commands; every agent dependency lives in the repo-root file.
 -r ../requirements.txt
-<<<<<<< HEAD
-litellm>=1.80,<2
-httpx>=0.27,<1
-PyJWT[crypto]>=2.10,<3
-ag-ui-protocol>=0.1,<1
-
 flask-sock>=0.7,<1
-=======
->>>>>>> abfe6cb452fcf836c969612a4e30ebb6d1494fa4
