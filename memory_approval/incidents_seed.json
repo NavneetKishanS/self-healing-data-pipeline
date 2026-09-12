@@ -1,0 +1,30 @@
+[
+  {
+    "incident_id": "inc_001",
+    "error_type": "schema_drift",
+    "root_cause": "Upstream 'amount' column type changed from float to string without notice.",
+    "fix_applied": {"fix_type": "schema_patch", "target": "orders", "change": {"column": "amount", "new_type": "float"}},
+    "outcome": "resolved"
+  },
+  {
+    "incident_id": "inc_002",
+    "error_type": "null_spike",
+    "root_cause": "Upstream service stopped populating customer_id during a deploy window.",
+    "fix_applied": {"fix_type": "config_change", "target": "orders", "change": {"action": "backfill_from_cache"}},
+    "outcome": "resolved"
+  },
+  {
+    "incident_id": "inc_003",
+    "error_type": "timeout",
+    "root_cause": "Load step ran against an unindexed table after a data volume spike.",
+    "fix_applied": {"fix_type": "config_change", "target": "orders", "change": {"action": "add_index"}},
+    "outcome": "resolved"
+  },
+  {
+    "incident_id": "inc_004",
+    "error_type": "schema_drift",
+    "root_cause": "A retry_policy fix was tried instead of a schema patch and did not address the type mismatch.",
+    "fix_applied": {"fix_type": "retry_policy", "target": "orders", "change": {"max_retries": 3}},
+    "outcome": "reverted"
+  }
+]
