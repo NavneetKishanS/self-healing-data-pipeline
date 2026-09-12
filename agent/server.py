@@ -26,14 +26,17 @@ from .transmitter import Transmitter
 from uuid import uuid4
 from datetime import datetime, timezone
 from .settings import integration_status, positive_number
+from .slack import SlackNotifier
 from .validation import fingerprint
 from .watcher import Watcher
 
 
-def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir=None, watch=False):
+def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir=None,
+               slack=None, watch=False):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
     auth = None if local_no_auth else (verifier or Auth0Verifier())
+    slack = slack or SlackNotifier()
     directory = Path(state_dir) if state_dir else Path(__file__).parent / ".state"
     directory.mkdir(parents=True, exist_ok=True)
     database = directory / "runs.sqlite"
@@ -95,7 +98,8 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
 
     def snapshot(run):
         return {"incident_id": run["id"], "status": run["status"],
-                "approval": deepcopy(run["pending"]), "result": deepcopy(run["result"])}
+                "approval": deepcopy(run["pending"]), "result": deepcopy(run["result"]),
+                "slack": deepcopy(run.get("slack"))}
 
     def owned(run_id, owner):
         run = runs.get(run_id)
@@ -123,7 +127,7 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                     raise ValueError("This run ID was already used; inspect stored outcome before starting another incident") from None
             run = {"id": run_id, "owner": owner, "status": "running", "pending": None,
                    "result": None, "decision": None, "event": Event(), "queue": Queue(),
-                   "streaming": False, "deadline": None}
+                   "streaming": False, "deadline": None, "slack": None}
             runs[run_id] = run
 
         def approval(*, diagnosis, proposed_fix, confidence):
@@ -134,8 +138,13 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                 run["status"] = "awaiting_approval"
                 timeout = positive_number("APPROVAL_TIMEOUT_SECONDS", 120)
                 run["deadline"] = monotonic() + timeout
+                proposal = deepcopy(run["pending"])
                 run["queue"].put(snapshot(run))
-            run["event"].wait(timeout)
+            slack_result = slack.post_approval(proposal) if owner == "local-demo" else {"status": "disabled"}
+            with lock:
+                run["slack"] = slack_result
+                run["queue"].put(snapshot(run))
+            run["event"].wait(max(0, run["deadline"] - monotonic()))
             with lock:
                 decision = run["decision"] or {"approved": False, "human_note": "Approval expired", "expired": True}
                 run["pending"] = None
@@ -146,7 +155,7 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
             try:
                 kwargs = {} if rows is None else {"rows": deepcopy(rows), "dataset_name": dataset_name}
                 result = runner(job_id, approval=approval, incident_id=run_id, inject_failure=inject_failure, **kwargs)
-                result["approval_subject"] = run["owner"] if run["decision"] else None
+                result["approval_subject"] = run["decision"].get("subject") if run["decision"] else None
             except Exception as exc:
                 result = {"incident_id": run_id, "job_id": job_id, "outcome": "gave_up",
                           "reason": "Live run failed (" + type(exc).__name__ + "); no automatic retry"}
@@ -157,7 +166,9 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                     db.execute("UPDATE runs SET status='finished', result=? WHERE id=?", (json.dumps(result), run_id))
                 watcher.charge(result)  # before anyone can observe "finished", so the budget never lags
                 run["queue"].put(snapshot(run))
-            watcher.wake()
+            if owner == "local-demo":
+                slack.post_result(result, run["slack"])
+            watcher.wake()  # this incident is done; let the watcher claim the next batch
         Thread(target=worker, daemon=True).start()
         return run
 
@@ -213,7 +224,9 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
                        (batch_id, owner, payload, json.dumps(result), result["created_at"]))
         changed(owner)
         if errors:
-            watcher.wake()
+            if owner == "local-demo" and slack.enabled:
+                Thread(target=slack.post_detection, args=(deepcopy(result),), daemon=True).start()
+            watcher.wake()  # a flagged batch is work the watcher can claim without a click
         return jsonify(result), 201
 
     @app.post("/api/ingestion/replay")
@@ -402,6 +415,50 @@ def create_app(*, local_no_auth=False, runner=run_live, verifier=None, state_dir
             run["decision"] = {"approved": data["approved"], "human_note": note, "subject": owner}
             run["event"].set()
         return {"recorded": True}
+
+    @app.post("/api/slack/actions")
+    def slack_action():
+        raw = request.get_data(cache=True)
+        if not slack.verify(request.headers.get("X-Slack-Request-Timestamp"),
+                            request.headers.get("X-Slack-Signature"), raw):
+            return jsonify(error="Invalid Slack signature"), 401
+        try:
+            payload = json.loads(request.form["payload"])
+        except (KeyError, ValueError):
+            return jsonify(error="Invalid Slack action"), 400
+        data, status = handle_slack_action(payload)
+        return jsonify(data), status
+
+    def handle_slack_action(payload):
+        # Called only after HTTP signature verification or by the authenticated Socket Mode adapter.
+        try:
+            if not local_no_auth or not slack.authorized(payload):
+                return {"text": "You are not an authorized reviewer for this workspace/channel."}, 403
+            if payload.get("type") != "block_actions" or len(payload.get("actions", [])) != 1:
+                return {"text": "Invalid Slack action"}, 400
+            action = payload["actions"][0]
+            reference = json.loads(action["value"])
+            approved = {"pipeline_approve": True, "pipeline_reject": False}[action["action_id"]]
+            run_id, fix_hash = reference["incident_id"], reference["fix_hash"]
+            slack_user = payload.get("user", {}).get("id", "unknown")
+            if not isinstance(run_id, str) or not isinstance(fix_hash, str):
+                return {"text": "Invalid proposal reference"}, 400
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+            return {"text": "Invalid Slack action"}, 400
+        with lock:
+            run = runs.get(run_id)
+            if (not run or run["owner"] != "local-demo" or run["status"] != "awaiting_approval" or run["decision"] is not None
+                    or monotonic() >= run["deadline"]):
+                return {"text": "This approval is no longer pending."}, 409
+            if fix_hash != run["pending"]["fix_hash"]:
+                return {"text": "This proposal has changed; review the latest one."}, 409
+            run["decision"] = {"approved": approved, "human_note": "Slack button decision",
+                               "subject": "slack:" + slack_user}
+            run["event"].set()
+        word = "approved" if approved else "rejected"
+        return {"text": f"Decision recorded: {word} by {slack_user} for incident {run_id}."}, 200
+
+    app.extensions["slack_action"] = handle_slack_action
 
     @app.post("/agent")
     def ag_ui():

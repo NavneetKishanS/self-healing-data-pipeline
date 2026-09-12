@@ -44,7 +44,7 @@ class _NarratedProcedures:
 
 
 def run_live(job_id="job_1", *, approval=None, incident_id=None, inject_failure=None,
-             report=True, notify=None, model=None, procedures=None, dataset_name="orders", rows=None):
+             report=True, notify=None, model=None, procedures=None, rows=None, dataset_name="orders"):
     """Single-process, serialized live runs. No synthetic model fallback."""
     if not _RUN_LOCK.acquire(blocking=False):
         raise RuntimeError("Another incident is running; shared pipeline/approval state is busy")
