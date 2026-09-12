@@ -40,3 +40,25 @@ python -c "from pipeline.tools_pipeline import get_recent_logs; print(get_recent
   standing up real orchestration infra eats hours you don't have.
 - Don't build more than 3 failure scenarios. One reliable one beats three flaky ones.
 - Don't change the tool contract shapes without telling Dev B and Dev C first.
+
+## Shared verification dataset
+
+`pipeline/fixtures/orders.csv` — 60 deterministic rows (fixed random seed) matching the `orders`
+schema from CONTEXT.md §2 (`order_id`, `customer_id`, `amount`, `created_at`). `row_count` /
+`expected_row_count` in every tool response now derive from this file's real length instead of a
+hardcoded number, so anyone on the team can open the CSV and check the numbers `get_recent_logs`
+reports actually make sense.
+
+Use it as the common reference point when sanity-checking output, independent of who's testing:
+
+```bash
+wc -l pipeline/fixtures/orders.csv   # 61 (60 rows + header) — matches expected_row_count: 60
+```
+
+- `schema_drift` — fails all 60 rows (whole-column type failure), fix reverts to 60/60.
+- `null_spike` — fixed 42% of the 60 rows treated as affected (currently a count derived from the
+  fixture size, not per-row null injection — the CSV itself isn't mutated for this scenario).
+- `timeout` — row_count 0, no fixture dependency.
+
+If you regenerate the fixture, keep the same seed/row count convention (see the generation snippet
+in the branch history) so numbers stay reproducible across everyone's machine.

@@ -7,7 +7,24 @@ can read it. Deliberately simple — the point is reproducible failure, not real
 """
 
 import argparse
+import copy
+import csv
 from datetime import datetime, timezone
+from pathlib import Path
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "orders.csv"
+
+
+def _load_orders_fixture() -> list[dict]:
+    """
+    Shared team fixture (pipeline/fixtures/orders.csv) so Dev A/B/C all sanity-check
+    against the same real row counts instead of a magic number.
+    """
+    with open(FIXTURE_PATH, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+ORDERS = _load_orders_fixture()
 
 # ---- module-level "database" the whole demo reads/writes ----
 STATE = {
@@ -16,8 +33,8 @@ STATE = {
         "error_type": None,
         "error_message": "",
         "affected_table": "orders",
-        "row_count": 1000,
-        "expected_row_count": 1000,
+        "row_count": len(ORDERS),
+        "expected_row_count": len(ORDERS),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 }
@@ -33,6 +50,7 @@ SCHEMA = {
         "last_changed": None,
     }
 }
+SCHEMA_PRISTINE = copy.deepcopy(SCHEMA)
 
 
 def run_pipeline(job_id: str = "job_1") -> dict:
@@ -74,12 +92,28 @@ def run_pipeline(job_id: str = "job_1") -> dict:
 
 
 def reset(job_id: str = "job_1") -> None:
+    """
+    Clears STATE only. Deliberately does NOT touch SCHEMA — tools_pipeline.rerun_pipeline
+    calls this before re-running, and SCHEMA must survive that call so a rerun genuinely
+    fails when schema_drift hasn't actually been fixed (see run_pipeline's docstring).
+    Use restore_schema() separately when starting a brand new failure scenario.
+    """
     STATE[job_id].update({
         "status": "success",
         "error_type": None,
         "error_message": "",
         "row_count": STATE[job_id]["expected_row_count"],
     })
+
+
+def restore_schema() -> None:
+    """
+    Restores SCHEMA to its pristine (undrifted) state. Call this before injecting a new
+    failure scenario — not before a rerun — so an unresolved schema_drift left over from
+    a previous scenario in the same process can't silently corrupt the next one.
+    """
+    SCHEMA["orders"]["columns"] = copy.deepcopy(SCHEMA_PRISTINE["orders"]["columns"])
+    SCHEMA["orders"]["last_changed"] = SCHEMA_PRISTINE["orders"]["last_changed"]
 
 
 if __name__ == "__main__":
