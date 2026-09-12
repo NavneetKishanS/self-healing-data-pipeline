@@ -142,11 +142,11 @@ apply only the approved repair, rerun, and report the observed outcome.
 - Build the first end-to-end run with shared fixtures, then replace stubs with real functions.
   Label fixtures in demos; do not present simulated execution as a production integration.
 
-## Required hackathon integrations: CopilotKit and Exa
+## Required hackathon integrations: CopilotKit, Exa, and Ambiguous
 
 Build a pipeline incident copilot: investigate a reproducible failure, retrieve supporting public
 technical documentation, show the diagnosis and critique, obtain approval, and verify the repair.
-Both integrations must participate in the demonstrated workflow, not merely appear as dependencies.
+All three integrations must participate in the demonstrated workflow, not merely appear as dependencies.
 
 - **CopilotKit (Dev C, with Dev B):** build a React frontend in `frontend/` with incident progress,
   source links, a proposed-fix card, Approve/Reject controls, and observed recovery results.
@@ -174,6 +174,22 @@ Both integrations must participate in the demonstrated workflow, not merely appe
   Show a real Exa lookup and a CopilotKit approval round trip. Use recorded Exa responses for
   repeatable evals and label them as fixtures. On search failure, show unavailability and proceed
   only if local evidence suffices; otherwise return `needs_human`.
+
+- **Ambiguous (Dev C):** publish one incident report to the configured demo workspace after the
+  run terminates, then display its document link in CopilotKit. Include the incident ID, diagnosis,
+  Exa source links, approval decision, observed repair outcome, and any unresolved follow-up.
+  Keep JSON incident memory and local traces authoritative; Ambiguous is the team-facing report.
+  Implement `memory_approval/report_export.py` using the documented Documents REST API with
+  server-side `AMBIGUOUS_API_KEY`. Verify request/response schemas during implementation.
+  Use [Ambiguous REST documentation](https://www.ambiguous.ai/agents/api); the supplied
+  [llms.txt index](https://www.ambiguous.ai/llms.txt) was not retrievable during this review.
+- Export is deterministic post-run delivery, not another model-selected repair tool: retain the
+  eight-tool incident limit and allow at most one separately traced export request with a timeout.
+  Persist the returned document ID against the incident ID; do not blindly retry an uncertain
+  create. Export failure leaves the repair outcome unchanged and shows an explicit delivery error.
+- Send only a redacted report to the configured workspace, never raw rows or credentials.
+  Do not expose Ambiguous mail, chat, or arbitrary workspace operations to the model. Demo a real
+  report export; use mocked delivery in evals and check duplicate prevention and export failure.
 
 ## Model access and configuration (Dev B)
 
@@ -381,7 +397,7 @@ Additional guidance adapted from [The AI Agent Stack: A Builder's Guide to Moder
   executable markup. Keep developer traces separate from the human approval view.
 - **Regression checks (all):** rerun the eval suite after prompt, model, or tool changes; include
   injected instructions in logs/history and attempts to mutate an unrelated target.
-- **Integration scope:** CopilotKit/AG-UI and Exa are required for this hackathon. Keep pipeline
+- **Integration scope:** CopilotKit/AG-UI, Exa, and Ambiguous are required for this hackathon. Keep pipeline
   tools as Python functions; MCP and A2A remain unnecessary for the current scope.
 
 Keep an internal trace separate from the fixed `log_incident` payload: run/incident IDs, job ID,
